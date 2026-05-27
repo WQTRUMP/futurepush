@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "futures-signal"
+version = "0.1.0"
+description = "A股股指期货实时信号推送服务"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "akshare>=1.14.0",
+    "pandas>=2.1.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -1,0 +1,14 @@
+name: futures-signal
+
+services:
+  futures-signal:
+    build: .
+    container_name: futures-signal
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    command: ["python", "-m", "futures_signal", "run"]

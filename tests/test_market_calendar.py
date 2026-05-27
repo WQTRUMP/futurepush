@@ -1,0 +1,25 @@
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
+
+from futures_signal.market_calendar import TradingCalendar, is_roll_window, third_friday
+
+
+TZ = ZoneInfo("Asia/Shanghai")
+
+
+def test_third_friday_and_roll_window():
+    assert third_friday(2026, 5) == date(2026, 5, 15)
+    assert is_roll_window(datetime(2026, 5, 14, 10, 0, tzinfo=TZ), window_days=7)
+    assert not is_roll_window(datetime(2026, 5, 7, 10, 0, tzinfo=TZ), window_days=7)
+
+
+def test_trading_calendar_uses_fetched_dates(tmp_path):
+    calendar = TradingCalendar(
+        TZ,
+        use_akshare=True,
+        cache_path=tmp_path / "trade_dates.json",
+        fetcher=lambda: [date(2026, 5, 27)],
+    )
+    assert calendar.is_trading_day(date(2026, 5, 27))
+    assert not calendar.is_trading_day(date(2026, 5, 28))
+    assert calendar.source == "akshare"
