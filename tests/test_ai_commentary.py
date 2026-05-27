@@ -6,8 +6,7 @@ from futures_signal.config import Settings
 
 def _settings(tmp_path: Path, enabled=True):
     return Settings(
-        telegram_bot_token="token",
-        telegram_chat_id="chat",
+        wecom_webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test",
         timezone_name="Asia/Shanghai",
         sample_interval_seconds=60,
         alert_cooldown_seconds=300,

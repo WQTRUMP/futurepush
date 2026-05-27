@@ -1,16 +1,16 @@
 # A股股指期货实时信号推送服务
 
-用 AkShare 每分钟采样 IF/IH/IC/IM 与对应现货指数，计算基差、持仓、成交、期现强弱、共振和尾盘信号，通过 Telegram Bot 推送关键变化。
+用 AkShare 每分钟采样 IF/IH/IC/IM 与对应现货指数，计算基差、持仓、成交、期现强弱、共振和尾盘信号，通过企业微信群机器人推送关键变化。
 
 ## 快速开始
 
 ```bash
 cp .env.example .env
-# 填写 TELEGRAM_BOT_TOKEN、TELEGRAM_CHAT_ID、DEEPSEEK_API_KEY
+# 填写 WECOM_WEBHOOK_URL、DEEPSEEK_API_KEY
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-python -m futures_signal test-telegram
+python -m futures_signal test-wecom
 python -m futures_signal once
 python -m futures_signal run
 ```
@@ -19,9 +19,15 @@ python -m futures_signal run
 
 ```bash
 cp .env.example .env
-# 填写 Telegram 配置；如阿里云 VPS 无法访问 Telegram，配置 HTTPS_PROXY/HTTP_PROXY
+# 填写企业微信机器人 Webhook 和 DeepSeek 配置
 docker compose up -d --build
 docker compose logs -f
+```
+
+企业微信机器人 Webhook 形如：
+
+```env
+WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
 
 服务默认通过 AkShare `tool_trade_date_hist_sina` 获取 A 股交易日历，只在交易日的日盘 `09:30-11:30`、`13:00-15:00` 采样。非交易日不会抓行情，也不会推送实时信号。若要调试或非交易时段运行，设置：
@@ -38,7 +44,7 @@ RUN_OUTSIDE_MARKET_HOURS=true
 python -m futures_signal run
 python -m futures_signal once
 python -m futures_signal once --push
-python -m futures_signal test-telegram
+python -m futures_signal test-wecom
 python -m futures_signal calendar
 ```
 
@@ -81,7 +87,7 @@ DEEPSEEK_MODEL=deepseek-v4-pro
 DEEPSEEK_THINKING_ENABLED=false
 ```
 
-`deepseek-v4-pro` 是默认最新模型配置；如需降低成本或延迟，可改为 `deepseek-v4-flash`。点评失败不会阻断 Telegram 推送，消息会继续发送客观行情部分。
+`deepseek-v4-pro` 是默认最新模型配置；如需降低成本或延迟，可改为 `deepseek-v4-flash`。点评失败不会阻断企业微信推送，消息会继续发送客观行情部分。
 
 测试 AI 点评：
 

@@ -1,6 +1,6 @@
 # 阿里云 ECS 部署
 
-本项目推荐用 Docker Compose 部署。服务没有对外 HTTP 端口，安全组只需要开放 SSH 端口即可；出站需要能访问 AkShare 数据源、DeepSeek API，以及 Telegram API 或你配置的代理。
+本项目推荐用 Docker Compose 部署。服务没有对外 HTTP 端口，安全组只需要开放 SSH 端口即可；出站需要能访问 AkShare 数据源、DeepSeek API，以及企业微信机器人 Webhook。
 
 ## 1. 服务器准备
 
@@ -52,13 +52,12 @@ nano .env
 至少填写：
 
 ```env
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_CHAT_ID=...
+WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...
 DEEPSEEK_API_KEY=...
 TZ=Asia/Shanghai
 ```
 
-如果阿里云 VPS 无法直连 Telegram，需要在 `.env` 里配置可用代理：
+如果服务器出站网络需要代理，可在 `.env` 里配置：
 
 ```env
 HTTPS_PROXY=http://proxy-host:proxy-port
@@ -72,10 +71,10 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-验证 Telegram：
+验证企业微信推送：
 
 ```bash
-docker compose run --rm futures-signal python -m futures_signal test-telegram
+docker compose run --rm futures-signal python -m futures_signal test-wecom
 ```
 
 验证 DeepSeek：

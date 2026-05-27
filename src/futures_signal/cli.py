@@ -11,7 +11,7 @@ from .formatting import format_once_output
 from .market_calendar import TradingCalendar
 from .service import run_forever, run_once, setup_runtime_dirs
 from .storage import Storage
-from .telegram import TelegramClient
+from .wecom import WeComClient
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -21,9 +21,9 @@ def main(argv: list[str] | None = None) -> None:
     subparsers.add_parser("run", help="交易时段循环监控并推送")
 
     once_parser = subparsers.add_parser("once", help="抓取一次并打印当前评分")
-    once_parser.add_argument("--push", action="store_true", help="同时按推送规则发送 Telegram")
+    once_parser.add_argument("--push", action="store_true", help="同时按推送规则发送企业微信")
 
-    subparsers.add_parser("test-telegram", help="发送 Telegram 测试消息")
+    subparsers.add_parser("test-wecom", help="发送企业微信测试消息")
     subparsers.add_parser("test-ai", help="用 DeepSeek 生成一次 AI 点评测试")
     subparsers.add_parser("init-db", help="初始化 SQLite 表结构")
     subparsers.add_parser("calendar", help="查看今天是否为交易日及下一次采样时间")
@@ -37,10 +37,10 @@ def main(argv: list[str] | None = None) -> None:
         run_forever(settings)
         return
 
-    if args.command == "test-telegram":
-        client = TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id)
-        client.send_message("futures-signal Telegram test ok")
-        print("Telegram test message sent")
+    if args.command == "test-wecom":
+        client = WeComClient(settings.wecom_webhook_url)
+        client.send_message("futures-signal 企业微信测试消息")
+        print("企业微信测试消息已发送")
         return
 
     if args.command == "test-ai":
@@ -90,11 +90,11 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "once":
         source = AkShareDataSource(settings)
-        messenger = TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id) if args.push else None
+        messenger = WeComClient(settings.wecom_webhook_url) if args.push else None
         ai_client = AICommentaryClient(settings) if args.push else None
         analysis, pushed = run_once(settings, storage, source, messenger, ai_client, push=args.push)
         print(format_once_output(analysis))
-        print(f"\nTelegram pushed: {pushed}")
+        print(f"\nWeCom pushed: {pushed}")
         return
 
     if args.command == "init-db":

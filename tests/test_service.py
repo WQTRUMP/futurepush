@@ -6,7 +6,7 @@ from futures_signal.config import Settings
 from futures_signal.models import FutureQuote, MarketSnapshot, SpotQuote
 from futures_signal.service import run_once
 from futures_signal.storage import Storage
-from futures_signal.telegram import TelegramClient
+from futures_signal.wecom import WeComClient
 
 
 class FakeSource:
@@ -42,10 +42,9 @@ class FakeSource:
         return MarketSnapshot(timestamp=self.now, futures=futures, spots=spots)
 
 
-def test_run_once_persists_without_real_telegram(tmp_path: Path):
+def test_run_once_persists_without_real_wecom(tmp_path: Path):
     settings = Settings(
-        telegram_bot_token="token",
-        telegram_chat_id="chat",
+        wecom_webhook_url="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test",
         timezone_name="Asia/Shanghai",
         sample_interval_seconds=60,
         alert_cooldown_seconds=300,
@@ -74,7 +73,7 @@ def test_run_once_persists_without_real_telegram(tmp_path: Path):
     storage = Storage(settings.db_path)
     storage.init()
     source = FakeSource(datetime(2026, 5, 27, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
-    messenger = TelegramClient("token", "chat", dry_run=True)
+    messenger = WeComClient("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test", dry_run=True)
 
     analysis, pushed = run_once(settings, storage, source, messenger, push=True)
 

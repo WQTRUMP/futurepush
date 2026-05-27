@@ -13,7 +13,7 @@ from .market_calendar import TradingCalendar
 from .models import MarketAnalysis
 from .scoring import analyze_market
 from .storage import Storage
-from .telegram import TelegramClient
+from .wecom import WeComClient
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ def run_once(
     settings: Settings,
     storage: Storage,
     source: MarketDataSource,
-    messenger: TelegramClient | None = None,
+    messenger: WeComClient | None = None,
     ai_client: AICommentaryClient | None = None,
     push: bool = True,
 ) -> tuple[MarketAnalysis, bool]:
@@ -54,7 +54,7 @@ def run_once(
         ai_commentary = _generate_ai_commentary(ai_client, analysis)
         message = format_analysis(analysis, ai_commentary=ai_commentary)
         if messenger is None:
-            messenger = TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id)
+            messenger = WeComClient(settings.wecom_webhook_url)
         messenger.send_message(message)
         storage.save_alert(
             analysis.timestamp,
@@ -71,7 +71,7 @@ def run_forever(settings: Settings) -> None:
     storage = Storage(settings.db_path)
     storage.init()
     source = AkShareDataSource(settings)
-    messenger = TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id)
+    messenger = WeComClient(settings.wecom_webhook_url)
     ai_client = AICommentaryClient(settings)
     calendar = TradingCalendar(
         settings.tz,

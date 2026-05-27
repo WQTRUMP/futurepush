@@ -37,8 +37,7 @@ def _float_env(name: str, default: float) -> float:
 
 @dataclass(frozen=True)
 class Settings:
-    telegram_bot_token: str
-    telegram_chat_id: str
+    wecom_webhook_url: str
     timezone_name: str
     sample_interval_seconds: int
     alert_cooldown_seconds: int
@@ -73,8 +72,7 @@ class Settings:
         _load_dotenv()
         data_dir = Path(os.getenv("DATA_DIR", "data"))
         return cls(
-            telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
-            telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
+            wecom_webhook_url=os.getenv("WECOM_WEBHOOK_URL", "").strip(),
             timezone_name=os.getenv("TZ", "Asia/Shanghai").strip() or "Asia/Shanghai",
             sample_interval_seconds=_int_env("SAMPLE_INTERVAL_SECONDS", 60),
             alert_cooldown_seconds=_int_env("ALERT_COOLDOWN_SECONDS", 300),
