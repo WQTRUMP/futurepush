@@ -99,43 +99,43 @@ class AkShareDataSource:
         return contracts
 
     def _fetch_spots(self, now: datetime, warnings: list[str]) -> dict[str, SpotQuote]:
+        wanted = {config.spot_code: product for product, config in PRODUCT_CONFIGS.items()}
+        result = self._fetch_spots_from_sina(now, wanted, warnings, is_fallback=False)
+        missing_products = {product for product in wanted.values() if product not in result}
+        if missing_products:
+            result.update(self._fetch_spots_from_em(now, wanted, warnings))
+
+        missing = [product for product in wanted.values() if product not in result]
+        if missing:
+            warnings.append(f"现货指数缺失: {','.join(missing)}")
+
+        return {product: quote for product, quote in result.items() if quote.price > 0}
+
+    def _fetch_spots_from_em(
+        self,
+        now: datetime,
+        wanted: dict[str, str],
+        warnings: list[str],
+    ) -> dict[str, SpotQuote]:
         categories = ("沪深重要指数", "上证系列指数", "中证系列指数")
         result: dict[str, SpotQuote] = {}
-        wanted = {config.spot_code: product for product, config in PRODUCT_CONFIGS.items()}
-
         for category in categories:
             try:
                 df = self._call_quiet(self.ak.stock_zh_index_spot_em, symbol=category)
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"现货指数 {category} 获取失败: {self._brief_error(exc)}")
+                warnings.append(f"现货指数 {category} 补充源获取失败: {self._brief_error(exc)}")
                 continue
-            for row in self._rows(df):
-                code = normalize_index_code(row.get("代码"))
-                product = wanted.get(code)
-                if not product:
-                    continue
-                result[product] = SpotQuote(
-                    product=product,
-                    index_code=code,
-                    name=str(row.get("名称") or PRODUCT_CONFIGS[product].spot_name),
-                    price=self._first_float(row, ["最新价", "price", "最新"]),
-                    change_pct=self._first_float(row, ["涨跌幅", "change_pct"]),
-                    volume=self._first_float(row, ["成交量", "volume"], None),
-                    amount=self._first_float(row, ["成交额", "amount"], None),
-                    tick_time=now,
-                    raw=row,
-                )
-        missing = [code for code, product in wanted.items() if product not in result]
-        if missing:
-            result.update(self._fetch_spots_from_sina(now, wanted, warnings))
-
-        return {product: quote for product, quote in result.items() if quote.price > 0}
+            result.update(self._parse_spot_rows(now, self._rows(df), wanted))
+        if result:
+            warnings.append("现货指数已使用东方财富补充源")
+        return result
 
     def _fetch_spots_from_sina(
         self,
         now: datetime,
         wanted: dict[str, str],
         warnings: list[str],
+        is_fallback: bool = True,
     ) -> dict[str, SpotQuote]:
         try:
             df = self._call_quiet(self.ak.stock_zh_index_spot_sina)
@@ -143,8 +143,19 @@ class AkShareDataSource:
             warnings.append(f"新浪指数备用源获取失败: {self._brief_error(exc)}")
             return {}
 
+        result = self._parse_spot_rows(now, self._rows(df), wanted)
+        if result and is_fallback:
+            warnings.append("现货指数已使用新浪备用源")
+        return result
+
+    def _parse_spot_rows(
+        self,
+        now: datetime,
+        rows: list[dict[str, Any]],
+        wanted: dict[str, str],
+    ) -> dict[str, SpotQuote]:
         result: dict[str, SpotQuote] = {}
-        for row in self._rows(df):
+        for row in rows:
             code = normalize_index_code(row.get("代码"))
             product = wanted.get(code)
             if not product:
@@ -160,8 +171,6 @@ class AkShareDataSource:
                 tick_time=now,
                 raw=row,
             )
-        if result:
-            warnings.append("现货指数已使用新浪备用源")
         return result
 
     def _fetch_terms_if_due(

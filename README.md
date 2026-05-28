@@ -77,13 +77,23 @@ python -m futures_signal calendar
 
 ## AI 点评
 
-推送会先包含客观数据，再追加 DeepSeek 生成的“AI点评”。默认配置：
+推送会先包含客观数据，再追加 DeepSeek 生成的“AI点评”。AI 会根据 IF/IH/IC/IM 期货相对现货强弱、基差变化、持仓和成交变化，输出股票板块/风格的短线涨跌倾向。
+
+板块映射：
+
+- IH：大金融、银行、保险、券商、央国企红利
+- IF：沪深300权重、核心资产、消费和新能源龙头
+- IC：中盘制造、周期、医药、TMT中盘
+- IM：小盘成长、题材、高弹性方向
+
+默认配置：
 
 ```env
 AI_COMMENTARY_ENABLED=true
 DEEPSEEK_API_KEY=
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-pro
+DEEPSEEK_MAX_TOKENS=420
 DEEPSEEK_THINKING_ENABLED=false
 ```
 

@@ -36,9 +36,14 @@ class AICommentaryClient:
                 {
                     "role": "system",
                     "content": (
-                        "你是A股股指期货盯盘助手。基于用户提供的结构化数据做简洁点评，"
-                        "只解释信号含义和风险点，不编造未提供的数据，不给确定性收益承诺。"
-                        "输出中文，3到5行，每行尽量短。"
+                        "你是A股股指期货和股票板块联动盯盘助手。基于用户提供的结构化数据做简洁点评，"
+                        "必须根据IF、IH、IC、IM期货与对应现货指数的相对强弱、基差变化、持仓和成交变化，"
+                        "推断股票板块/风格的短线涨跌倾向。"
+                        "映射规则：IH偏大金融、银行、保险、券商、央国企红利；IF偏沪深300权重和核心资产；"
+                        "IC偏中盘制造、周期、医药和TMT中盘；IM偏小盘成长、题材和高弹性方向。"
+                        "输出中文，手机阅读格式，最多7行。"
+                        "固定包含：1行总判断；2到4行板块倾向，用“偏强/中性/偏弱”表达；1行风险。"
+                        "不要编造未提供的行业实时涨跌，不给确定性收益承诺。"
                     ),
                 },
                 {
@@ -90,6 +95,13 @@ def _analysis_for_prompt(analysis: MarketAnalysis) -> dict[str, object]:
         "warnings": analysis.warnings[:3],
         "term_summary": analysis.term_summary,
         "basis_definition": "期-现基差=期货价格-现货指数；负值为贴水，正值为升水；Δ5m>0表示贴水收窄或升水扩大。",
+        "sector_mapping": {
+            "IH": "大金融、银行、保险、券商、央国企红利",
+            "IF": "沪深300权重、核心资产、消费和新能源龙头",
+            "IC": "中盘制造、周期、医药、TMT中盘",
+            "IM": "小盘成长、题材、高弹性方向",
+        },
+        "required_output": "先给总判断，再给板块倾向，最后给风险；板块只给倾向，不声称真实行业涨跌。",
     }
 
 
@@ -109,7 +121,7 @@ def _signal_for_prompt(signal: ProductSignal) -> dict[str, object]:
     }
 
 
-def _clean_commentary(content: str, max_chars: int = 500) -> str:
+def _clean_commentary(content: str, max_chars: int = 700) -> str:
     lines = [line.strip(" \t\r\n-•") for line in content.splitlines()]
     cleaned = "\n".join(line for line in lines if line)
     if len(cleaned) > max_chars:

@@ -90,7 +90,7 @@ class Settings:
             deepseek_base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip(),
             deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro").strip() or "deepseek-v4-pro",
             deepseek_timeout_seconds=_int_env("DEEPSEEK_TIMEOUT_SECONDS", 20),
-            deepseek_max_tokens=_int_env("DEEPSEEK_MAX_TOKENS", 260),
+            deepseek_max_tokens=_int_env("DEEPSEEK_MAX_TOKENS", 420),
             deepseek_temperature=_float_env("DEEPSEEK_TEMPERATURE", 0.2),
             deepseek_thinking_enabled=_bool_env("DEEPSEEK_THINKING_ENABLED", False),
             deepseek_reasoning_effort=os.getenv("DEEPSEEK_REASONING_EFFORT", "high").strip() or "high",

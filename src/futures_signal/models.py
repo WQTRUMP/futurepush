@@ -14,10 +14,10 @@ class ProductConfig:
 
 
 PRODUCT_CONFIGS: dict[str, ProductConfig] = {
-    "IF": ProductConfig("IF", "沪深300指数", "000300", "沪深300"),
-    "IH": ProductConfig("IH", "上证50指数", "000016", "上证50"),
-    "IC": ProductConfig("IC", "中证500指数", "000905", "中证500"),
-    "IM": ProductConfig("IM", "中证1000指数", "000852", "中证1000"),
+    "IF": ProductConfig("IF", "沪深300指数期货", "000300", "沪深300"),
+    "IH": ProductConfig("IH", "上证50指数期货", "000016", "上证50"),
+    "IC": ProductConfig("IC", "中证500指数期货", "000905", "中证500"),
+    "IM": ProductConfig("IM", "中证1000股指期货", "000852", "中证1000"),
 }
 
 PRODUCTS: tuple[str, ...] = ("IF", "IH", "IC", "IM")
