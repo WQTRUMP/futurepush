@@ -63,11 +63,29 @@ class TermQuote:
 
 
 @dataclass(frozen=True)
+class PositionRankSignal:
+    product: str
+    net_short_top20: int | None
+    net_short_change_top20: int | None
+    citic_net_short_change: int | None = None
+
+
+@dataclass(frozen=True)
+class PositionTrendSignal:
+    product: str
+    days: int
+    net_short_change_sum: int
+    latest_net_short_change: int | None
+
+
+@dataclass(frozen=True)
 class MarketSnapshot:
     timestamp: datetime
     futures: dict[str, FutureQuote]
     spots: dict[str, SpotQuote]
     terms: dict[str, list[TermQuote]] = field(default_factory=dict)
+    positions: dict[str, PositionRankSignal] = field(default_factory=dict)
+    position_trends: dict[str, PositionTrendSignal] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -116,6 +134,11 @@ class ProductSignal:
     price_change_5m: float | None
     price_oi_signal: str
     main_contract_changed: bool
+    daily_price_change: float | None = None
+    daily_open_interest_change: int | None = None
+    daily_basis_change_bp: float | None = None
+    net_short_change_top20: int | None = None
+    citic_net_short_change: int | None = None
 
 
 @dataclass(frozen=True)
@@ -131,3 +154,4 @@ class MarketAnalysis:
     warnings: list[str]
     alert_kind: str | None
     term_summary: dict[str, str] = field(default_factory=dict)
+    position_trends: dict[str, PositionTrendSignal] = field(default_factory=dict)

@@ -19,6 +19,8 @@ def _settings(tmp_path: Path, enabled=True):
         trade_calendar_cache_path=tmp_path / "trade_dates.json",
         fetch_term_structure=False,
         fetch_term_structure_every_seconds=300,
+        fetch_position_rank=True,
+        position_trend_days=5,
         dividend_season_adjust=True,
         basis_history_days=20,
         roll_window_days=7,
@@ -70,9 +72,20 @@ def test_ai_commentary_prompt_requires_sector_tendency(tmp_path, monkeypatch):
     system_prompt = captured["payload"]["messages"][0]["content"]
     user_data = json.loads(captured["payload"]["messages"][1]["content"])
     assert "股票板块" in system_prompt
-    assert "偏强/中性/偏弱" in system_prompt
+    assert "前20会员净空变化" in system_prompt
+    assert "可能是" not in system_prompt
+    assert "疑似" not in system_prompt
+    assert "需要观察" not in system_prompt
     assert "sector_mapping" in user_data
+    assert "daily_signal_definition" in user_data
+    assert "position_rank_definition" in user_data
+    assert "可能是" not in json.dumps(user_data["trap_detection"], ensure_ascii=False)
+    assert "题材" not in json.dumps(user_data["sector_mapping"], ensure_ascii=False)
+    assert "题材躁动" not in json.dumps(user_data["trap_detection"], ensure_ascii=False)
     assert "大金融" in user_data["sector_mapping"]["IH"]
+    assert "daily_open_interest_change" in user_data["signals"]["IF"]
+    assert "daily_basis_change_bp" in user_data["signals"]["IF"]
+    assert "net_short_change_top20" in user_data["signals"]["IF"]
     assert "板块倾向" in text
 
 
@@ -117,4 +130,7 @@ def _signal(product):
         price_change_5m=None,
         price_oi_signal="多头主动开仓",
         main_contract_changed=False,
+        daily_price_change=18,
+        daily_open_interest_change=1200,
+        daily_basis_change_bp=5,
     )

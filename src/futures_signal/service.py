@@ -31,6 +31,10 @@ def run_once(
         product: storage.get_reference_snapshot(product, snapshot.timestamp)
         for product in ("IF", "IH", "IC", "IM")
     }
+    daily_references = {
+        product: storage.get_daily_reference_snapshot(product, snapshot.timestamp)
+        for product in ("IF", "IH", "IC", "IM")
+    }
     basis_histories = {
         product: storage.get_basis_history(product, snapshot.timestamp, settings.basis_history_days)
         for product in ("IF", "IH", "IC", "IM")
@@ -44,21 +48,31 @@ def run_once(
         previous_score,
         previous_band,
         basis_histories=basis_histories,
+        daily_references=daily_references,
         dividend_season_adjust=settings.dividend_season_adjust,
         roll_window_days=settings.roll_window_days,
     )
     storage.save_analysis(analysis)
 
-    should_push = push and _should_push(settings, storage, analysis)
+    kind = _alert_kind(settings, analysis)
+    should_push = push and kind is not None and not storage.has_recent_alert(
+        kind,
+        analysis.timestamp,
+        _alert_cooldown_seconds(settings, kind),
+    )
     if should_push:
         ai_commentary = _generate_ai_commentary(ai_client, analysis)
-        message = format_analysis(analysis, ai_commentary=ai_commentary)
+        message = format_analysis(
+            analysis,
+            ai_commentary=ai_commentary,
+            include_position_trend=_is_last_daily_window(settings, analysis.timestamp, kind),
+        )
         if messenger is None:
             messenger = WeComClient(settings.wecom_webhook_url)
         messenger.send_message(message)
         storage.save_alert(
             analysis.timestamp,
-            _alert_kind(settings, analysis),
+            kind,
             analysis.band,
             analysis.score,
             message,
@@ -109,21 +123,85 @@ def setup_runtime_dirs(settings: Settings) -> None:
 
 
 def _should_push(settings: Settings, storage: Storage, analysis: MarketAnalysis) -> bool:
-    if settings.push_every_sample:
-        kind = _alert_kind(settings, analysis)
-        return not storage.has_recent_alert(kind, analysis.timestamp, settings.alert_cooldown_seconds)
-
-    if analysis.alert_kind is None:
-        return False
-
     kind = _alert_kind(settings, analysis)
-    return not storage.has_recent_alert(kind, analysis.timestamp, settings.alert_cooldown_seconds)
+    if kind is None:
+        return False
+    return not storage.has_recent_alert(kind, analysis.timestamp, _alert_cooldown_seconds(settings, kind))
 
 
-def _alert_kind(settings: Settings, analysis: MarketAnalysis) -> str:
+def _is_last_daily_window(settings: Settings, now: datetime, kind: str | None) -> bool:
+    if kind is None or not kind.startswith("daily_") or kind.startswith("daily_urgent_"):
+        return False
+    last_time = _last_daily_push_time(settings)
+    if last_time is None:
+        return False
+    return kind == f"daily_{now:%Y%m%d}_{last_time}"
+
+
+def _last_daily_push_time(settings: Settings) -> str | None:
+    valid: list[tuple[int, int]] = []
+    for text in settings.daily_push_times.split(","):
+        text = text.strip()
+        if not text:
+            continue
+        try:
+            hour_text, minute_text = text.split(":", 1)
+            valid.append((int(hour_text), int(minute_text)))
+        except ValueError:
+            continue
+    if not valid:
+        return None
+    hour, minute = max(valid)
+    return f"{hour:02d}{minute:02d}"
+
+
+def _alert_kind(settings: Settings, analysis: MarketAnalysis) -> str | None:
     if settings.push_every_sample:
         return "sample"
-    return analysis.alert_kind or "sample"
+
+    if settings.push_policy == "event":
+        return analysis.alert_kind
+
+    if settings.push_policy == "daily":
+        scheduled_kind = _daily_window_kind(settings, analysis.timestamp)
+        if scheduled_kind:
+            return scheduled_kind
+        return _daily_urgent_kind(analysis)
+
+    return analysis.alert_kind
+
+
+def _alert_cooldown_seconds(settings: Settings, kind: str) -> int:
+    if kind.startswith("daily_urgent_"):
+        return settings.urgent_alert_cooldown_seconds
+    if kind.startswith("daily_"):
+        return settings.daily_alert_cooldown_seconds
+    return settings.alert_cooldown_seconds
+
+
+def _daily_window_kind(settings: Settings, now: datetime) -> str | None:
+    for text in settings.daily_push_times.split(","):
+        text = text.strip()
+        if not text:
+            continue
+        try:
+            hour_text, minute_text = text.split(":", 1)
+            target = now.replace(hour=int(hour_text), minute=int(minute_text), second=0, microsecond=0)
+        except ValueError:
+            logger.warning("invalid DAILY_PUSH_TIMES item: %s", text)
+            continue
+        delta_seconds = (now - target).total_seconds()
+        if 0 <= delta_seconds < settings.daily_push_window_seconds:
+            return f"daily_{now:%Y%m%d}_{target:%H%M}"
+    return None
+
+
+def _daily_urgent_kind(analysis: MarketAnalysis) -> str | None:
+    if analysis.alert_kind == "strong_long" or analysis.score >= 80:
+        return "daily_urgent_bullish"
+    if analysis.alert_kind == "strong_short" or analysis.score <= 19:
+        return "daily_urgent_bearish"
+    return None
 
 
 def _generate_ai_commentary(ai_client: AICommentaryClient | None, analysis: MarketAnalysis) -> str | None:

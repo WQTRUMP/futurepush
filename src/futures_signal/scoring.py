@@ -33,11 +33,13 @@ def analyze_market(
     previous_score: int | None,
     previous_band: str | None,
     basis_histories: dict[str, list[float]] | None = None,
+    daily_references: dict[str, HistoricalProductSnapshot | None] | None = None,
     dividend_season_adjust: bool = True,
     roll_window_days: int = 7,
 ) -> MarketAnalysis:
     signals: dict[str, ProductSignal] = {}
     basis_histories = basis_histories or {}
+    daily_references = daily_references or {}
     for product in PRODUCTS:
         future = snapshot.futures.get(product)
         spot = snapshot.spots.get(product)
@@ -53,6 +55,10 @@ def analyze_market(
         volume_change = future.volume - ref.volume if ref else None
         oi_change = future.open_interest - ref.open_interest if ref else None
         price_change = future.price - ref.futures_price if ref else None
+        daily_ref = daily_references.get(product)
+        daily_price_change = future.price - daily_ref.futures_price if daily_ref else None
+        daily_oi_change = future.open_interest - daily_ref.open_interest if daily_ref else None
+        daily_basis_change_bp = item_basis_bp - daily_ref.basis_bp if daily_ref else None
         previous_contract = latest_contracts.get(product)
         contract_changed = bool(previous_contract and previous_contract != future.contract)
         signals[product] = ProductSignal(
@@ -80,20 +86,31 @@ def analyze_market(
             price_change_5m=price_change,
             price_oi_signal=classify_price_oi(price_change, oi_change),
             main_contract_changed=contract_changed,
+            daily_price_change=daily_price_change,
+            daily_open_interest_change=daily_oi_change,
+            daily_basis_change_bp=daily_basis_change_bp,
+            net_short_change_top20=(
+                snapshot.positions[product].net_short_change_top20 if product in snapshot.positions else None
+            ),
+            citic_net_short_change=(
+                snapshot.positions[product].citic_net_short_change if product in snapshot.positions else None
+            ),
         )
 
     components = {
         "basis_change": _basis_change_component(signals, snapshot.timestamp, dividend_season_adjust),
         "open_interest": _open_interest_component(signals),
+        "position_rank": _position_rank_component(signals),
         "relative_strength": _relative_strength_component(signals),
         "resonance": _resonance_component(signals),
         "tail": _tail_component(snapshot.timestamp, signals),
     }
     weighted = (
-        components["basis_change"] * 0.30
-        + components["open_interest"] * 0.25
-        + components["relative_strength"] * 0.20
-        + components["resonance"] * 0.15
+        components["basis_change"] * 0.25
+        + components["open_interest"] * 0.20
+        + components["position_rank"] * 0.20
+        + components["relative_strength"] * 0.15
+        + components["resonance"] * 0.10
         + components["tail"] * 0.10
     )
     score = int(round(clamp(weighted)))
@@ -121,6 +138,7 @@ def analyze_market(
         warnings=snapshot.warnings,
         alert_kind=alert_kind,
         term_summary=term_summary,
+        position_trends=snapshot.position_trends,
     )
 
 
@@ -163,6 +181,25 @@ def _open_interest_component(signals: dict[str, ProductSignal]) -> float:
             scores.append(0.0)
         elif signal.price_change_5m < 0 and signal.open_interest_change < 0:
             scores.append(35.0)
+        else:
+            scores.append(50.0)
+    return _average(scores)
+
+
+def _position_rank_component(signals: dict[str, ProductSignal]) -> float:
+    scores = []
+    for signal in signals.values():
+        net_short_change = signal.net_short_change_top20
+        if net_short_change is None:
+            scores.append(50.0)
+        elif net_short_change <= -1000:
+            scores.append(100.0)
+        elif net_short_change < 0:
+            scores.append(70.0)
+        elif net_short_change >= 1000:
+            scores.append(0.0)
+        elif net_short_change > 0:
+            scores.append(30.0)
         else:
             scores.append(50.0)
     return _average(scores)
@@ -269,6 +306,15 @@ def _reasons_and_alert_kind(
         reasons.append(f"深贴水低分位继续扩大: {','.join(worse_products)}")
         alert_kind = alert_kind or "discount_extreme_worse"
 
+    net_short_worse = [signal.product for signal in signals.values() if _net_short_expanding(signal)]
+    if net_short_worse:
+        reasons.append(f"前20净空扩大: {','.join(net_short_worse)}")
+        alert_kind = alert_kind or ("im_net_short_expanding" if "IM" in net_short_worse else "net_short_expanding")
+
+    net_short_better = [signal.product for signal in signals.values() if _net_short_contracting(signal)]
+    if net_short_better:
+        reasons.append(f"前20净空收敛: {','.join(net_short_better)}")
+
     strong_long = _is_strong_long(signals)
     strong_short = _is_strong_short(signals)
     if strong_long:
@@ -315,6 +361,7 @@ def _is_strong_long(signals: dict[str, ProductSignal]) -> bool:
         and signal.price_change_5m > 0
         and signal.open_interest_change is not None
         and signal.open_interest_change > 0
+        and (signal.net_short_change_top20 is None or signal.net_short_change_top20 < 0)
         and signal.basis_change_bp is not None
         and signal.basis_change_bp > 0
     )
@@ -332,6 +379,7 @@ def _is_strong_short(signals: dict[str, ProductSignal]) -> bool:
         and signal.price_change_5m < 0
         and signal.open_interest_change is not None
         and signal.open_interest_change > 0
+        and (signal.net_short_change_top20 is None or signal.net_short_change_top20 > 0)
         and signal.basis_change_bp is not None
         and signal.basis_change_bp < 0
     )
@@ -361,6 +409,14 @@ def _basis_widening_fast(
 ) -> bool:
     threshold = -8 if dividend_season_adjust and is_dividend_season(now) else -5
     return any(signal.basis_change_bp is not None and signal.basis_change_bp <= threshold for signal in signals.values())
+
+
+def _net_short_expanding(signal: ProductSignal) -> bool:
+    return signal.net_short_change_top20 is not None and signal.net_short_change_top20 >= 1000
+
+
+def _net_short_contracting(signal: ProductSignal) -> bool:
+    return signal.net_short_change_top20 is not None and signal.net_short_change_top20 <= -1000
 
 
 def _discount_extreme_repair_signal(signal: ProductSignal) -> bool:

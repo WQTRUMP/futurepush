@@ -3,14 +3,23 @@ from __future__ import annotations
 import logging
 import re
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import StringIO
 from typing import Any
 
 from .config import Settings
 from .data_sources import DataSourceError
 from .metrics import basis, basis_bp, contract_sort_key, normalize_index_code, to_float, to_int
-from .models import FutureQuote, MarketSnapshot, PRODUCT_CONFIGS, PRODUCTS, SpotQuote, TermQuote
+from .models import (
+    FutureQuote,
+    MarketSnapshot,
+    PositionRankSignal,
+    PositionTrendSignal,
+    PRODUCT_CONFIGS,
+    PRODUCTS,
+    SpotQuote,
+    TermQuote,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +34,10 @@ class AkShareDataSource:
         self.ak = ak
         self._last_term_fetch_at: datetime | None = None
         self._last_terms: dict[str, list[TermQuote]] = {}
+        self._last_position_date: str | None = None
+        self._last_positions: dict[str, PositionRankSignal] = {}
+        self._last_position_trend_date: str | None = None
+        self._last_position_trends: dict[str, PositionTrendSignal] = {}
 
     def fetch(self) -> MarketSnapshot:
         now = datetime.now(self.settings.tz)
@@ -32,6 +45,8 @@ class AkShareDataSource:
         futures = self._fetch_main_futures(now, warnings)
         spots = self._fetch_spots(now, warnings)
         terms = self._fetch_terms_if_due(now, spots, warnings)
+        positions = self._fetch_positions_if_due(now, warnings)
+        position_trends = self._fetch_position_trends_if_due(now, warnings)
 
         if not futures:
             raise DataSourceError("AkShare 未返回 IF/IH/IC/IM 期货主力行情")
@@ -42,7 +57,15 @@ class AkShareDataSource:
         if missing:
             warnings.append(f"部分品种缺失: {','.join(missing)}")
 
-        return MarketSnapshot(timestamp=now, futures=futures, spots=spots, terms=terms, warnings=warnings)
+        return MarketSnapshot(
+            timestamp=now,
+            futures=futures,
+            spots=spots,
+            terms=terms,
+            positions=positions,
+            position_trends=position_trends,
+            warnings=warnings,
+        )
 
     def _fetch_main_futures(self, now: datetime, warnings: list[str]) -> dict[str, FutureQuote]:
         contracts = self._main_contract_symbols(warnings)
@@ -50,14 +73,18 @@ class AkShareDataSource:
             contracts = ["IF0", "IH0", "IC0", "IM0"]
             warnings.append("主力合约列表不可用，已回退到新浪连续合约 IF0/IH0/IC0/IM0")
 
+        result = self._fetch_main_futures_from_realtime(now, contracts, warnings)
+        if all(product in result for product in PRODUCTS):
+            return result
+
         symbol_text = ",".join(contracts)
         try:
             df = self._call_quiet(self.ak.futures_zh_spot, symbol=symbol_text, market="FF", adjust="0")
         except Exception as exc:  # noqa: BLE001 - third-party API can raise many exception types
-            raise DataSourceError(f"AkShare futures_zh_spot 调用失败: {self._brief_error(exc)}") from exc
+            warnings.append(f"主力期货新浪批量补充源获取失败: {self._brief_error(exc)}")
+            return result
 
         rows = self._rows(df)
-        result: dict[str, FutureQuote] = {}
         for index, row in enumerate(rows):
             product = self._infer_product(row)
             if product is None and index < len(contracts):
@@ -68,18 +95,73 @@ class AkShareDataSource:
             price = self._first_float(row, ["current_price", "trade", "最新价", "price"])
             if price <= 0:
                 continue
-            result[product] = FutureQuote(
-                product=product,
-                contract=contract,
-                name=str(row.get("symbol") or row.get("name") or contract),
-                price=price,
-                change_pct=self._change_pct(row, price),
-                volume=self._first_int(row, ["volume", "成交量"]),
-                open_interest=self._first_int(row, ["hold", "position", "持仓量"]),
-                tick_time=self._parse_tick_time(now, row),
-                raw=row,
-            )
+            result[product] = self._future_quote_from_row(now, row, product, contract, price)
+        if not result:
+            warnings.append("主力期货实时源和新浪批量补充源均返回空数据")
         return result
+
+    def _fetch_main_futures_from_realtime(
+        self,
+        now: datetime,
+        contracts: list[str],
+        warnings: list[str],
+    ) -> dict[str, FutureQuote]:
+        preferred = {product: contract for contract in contracts if (product := self._product_from_contract(contract))}
+        result: dict[str, FutureQuote] = {}
+        for product, config in PRODUCT_CONFIGS.items():
+            try:
+                df = self._call_quiet(self.ak.futures_zh_realtime, symbol=config.future_name)
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(f"{product} 逐品种期货实时源获取失败: {self._brief_error(exc)}")
+                continue
+            row = self._select_main_future_row(product, self._rows(df), preferred.get(product))
+            if row is None:
+                warnings.append(f"{product} 逐品种期货实时源未找到主力合约")
+                continue
+            contract = self._infer_contract(row) or preferred.get(product) or product
+            price = self._first_float(row, ["current_price", "trade", "最新价", "price"])
+            if price <= 0:
+                warnings.append(f"{product} 逐品种期货实时源价格无效")
+                continue
+            result[product] = self._future_quote_from_row(now, row, product, contract, price)
+        return result
+
+    def _select_main_future_row(
+        self,
+        product: str,
+        rows: list[dict[str, Any]],
+        preferred_contract: str | None,
+    ) -> dict[str, Any] | None:
+        product_rows = [row for row in rows if (self._infer_product(row) or product) == product]
+        if preferred_contract:
+            for row in product_rows:
+                if self._infer_contract(row) == preferred_contract:
+                    return row
+        for row in product_rows:
+            contract = self._infer_contract(row)
+            if contract and re.match(rf"^{product}\d{{3,4}}$", contract):
+                return row
+        return product_rows[0] if product_rows else None
+
+    def _future_quote_from_row(
+        self,
+        now: datetime,
+        row: dict[str, Any],
+        product: str,
+        contract: str,
+        price: float,
+    ) -> FutureQuote:
+        return FutureQuote(
+            product=product,
+            contract=contract,
+            name=str(row.get("symbol") or row.get("name") or contract),
+            price=price,
+            change_pct=self._change_pct(row, price),
+            volume=self._first_int(row, ["volume", "成交量"]),
+            open_interest=self._first_int(row, ["hold", "position", "持仓量"]),
+            tick_time=self._parse_tick_time(now, row),
+            raw=row,
+        )
 
     def _main_contract_symbols(self, warnings: list[str]) -> list[str]:
         try:
@@ -224,6 +306,117 @@ class AkShareDataSource:
         self._last_term_fetch_at = now
         self._last_terms = terms
         return terms
+
+    def _fetch_positions_if_due(self, now: datetime, warnings: list[str]) -> dict[str, PositionRankSignal]:
+        if not self.settings.fetch_position_rank:
+            return {}
+        date_text = now.strftime("%Y%m%d")
+        if self._last_position_date == date_text:
+            return self._last_positions
+
+        positions: dict[str, PositionRankSignal] = {}
+        try:
+            rank_sum = self._call_quiet(self.ak.get_rank_sum, date=date_text, vars_list=list(PRODUCTS))
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"中金所持仓汇总获取失败: {self._brief_error(exc)}")
+            self._last_position_date = date_text
+            self._last_positions = {}
+            return {}
+
+        citic_changes = self._fetch_citic_net_short_changes(date_text, warnings)
+        rows = self._rows(rank_sum)
+        for product in PRODUCTS:
+            product_rows = [row for row in rows if str(row.get("variety") or row.get("var") or "").upper() == product]
+            if not product_rows:
+                continue
+            long_total = sum(self._first_int(row, ["long_open_interest_top20"], 0) or 0 for row in product_rows)
+            short_total = sum(self._first_int(row, ["short_open_interest_top20"], 0) or 0 for row in product_rows)
+            long_change = sum(self._first_int(row, ["long_open_interest_chg_top20"], 0) or 0 for row in product_rows)
+            short_change = sum(self._first_int(row, ["short_open_interest_chg_top20"], 0) or 0 for row in product_rows)
+            positions[product] = PositionRankSignal(
+                product=product,
+                net_short_top20=short_total - long_total,
+                net_short_change_top20=short_change - long_change,
+                citic_net_short_change=citic_changes.get(product),
+            )
+
+        self._last_position_date = date_text
+        self._last_positions = positions
+        return positions
+
+    def _fetch_citic_net_short_changes(self, date_text: str, warnings: list[str]) -> dict[str, int]:
+        try:
+            rank_table = self._call_quiet(self.ak.get_cffex_rank_table, date=date_text, vars_list=list(PRODUCTS))
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"中信期货席位持仓获取失败: {self._brief_error(exc)}")
+            return {}
+        if not isinstance(rank_table, dict):
+            return {}
+        result: dict[str, int] = {}
+        for contract, df in rank_table.items():
+            product = self._product_from_contract(contract)
+            if product not in PRODUCT_CONFIGS:
+                continue
+            long_change = 0
+            short_change = 0
+            for row in self._rows(df):
+                if "中信期货" in str(row.get("long_party_name") or ""):
+                    long_change += self._first_int(row, ["long_open_interest_chg"], 0) or 0
+                if "中信期货" in str(row.get("short_party_name") or ""):
+                    short_change += self._first_int(row, ["short_open_interest_chg"], 0) or 0
+            result[product] = result.get(product, 0) + short_change - long_change
+        return result
+
+    def _fetch_position_trends_if_due(self, now: datetime, warnings: list[str]) -> dict[str, PositionTrendSignal]:
+        if not self.settings.fetch_position_rank or self.settings.position_trend_days <= 1:
+            return {}
+        date_text = now.strftime("%Y%m%d")
+        if self._last_position_trend_date == date_text:
+            return self._last_position_trends
+
+        lookback_days = max(self.settings.position_trend_days * 2, 10)
+        start_day = (now.date() - timedelta(days=lookback_days)).strftime("%Y%m%d")
+        try:
+            df = self._call_quiet(
+                self.ak.get_rank_sum_daily,
+                start_day=start_day,
+                end_day=date_text,
+                vars_list=list(PRODUCTS),
+            )
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"近期期货持仓趋势获取失败: {self._brief_error(exc)}")
+            self._last_position_trend_date = date_text
+            self._last_position_trends = {}
+            return {}
+
+        by_product_date: dict[str, dict[str, int]] = {product: {} for product in PRODUCTS}
+        for row in self._rows(df):
+            product = str(row.get("variety") or row.get("var") or "").upper()
+            if product not in by_product_date:
+                continue
+            row_date = str(row.get("date") or "")
+            if not row_date:
+                continue
+            long_change = self._first_int(row, ["long_open_interest_chg_top20"], 0) or 0
+            short_change = self._first_int(row, ["short_open_interest_chg_top20"], 0) or 0
+            by_product_date[product][row_date] = by_product_date[product].get(row_date, 0) + short_change - long_change
+
+        trends: dict[str, PositionTrendSignal] = {}
+        for product, values_by_date in by_product_date.items():
+            recent = sorted(values_by_date.items())[-self.settings.position_trend_days :]
+            if not recent:
+                continue
+            changes = [value for _, value in recent]
+            trends[product] = PositionTrendSignal(
+                product=product,
+                days=len(changes),
+                net_short_change_sum=sum(changes),
+                latest_net_short_change=changes[-1],
+            )
+
+        self._last_position_trend_date = date_text
+        self._last_position_trends = trends
+        return trends
 
     @staticmethod
     def _rows(df: Any) -> list[dict[str, Any]]:

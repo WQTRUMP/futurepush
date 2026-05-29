@@ -97,6 +97,33 @@ class Storage:
             open_interest=row["open_interest"],
         )
 
+    def get_daily_reference_snapshot(self, product: str, now: datetime) -> HistoricalProductSnapshot | None:
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        oldest = day_start - timedelta(days=14)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                select ts, product, contract, futures_price, spot_price, basis_bp, volume, open_interest
+                from snapshots
+                where product = ? and ts < ? and ts >= ?
+                order by ts desc
+                limit 1
+                """,
+                (product, _dt(day_start), _dt(oldest)),
+            ).fetchone()
+        if row is None:
+            return None
+        return HistoricalProductSnapshot(
+            timestamp=datetime.fromisoformat(row["ts"]),
+            product=row["product"],
+            contract=row["contract"],
+            futures_price=row["futures_price"],
+            spot_price=row["spot_price"],
+            basis_bp=row["basis_bp"],
+            volume=row["volume"],
+            open_interest=row["open_interest"],
+        )
+
     def latest_contracts(self) -> dict[str, str]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -226,6 +253,9 @@ def _signal_payload(signal: ProductSignal) -> dict[str, Any]:
         "open_interest_change": signal.open_interest_change,
         "price_oi_signal": signal.price_oi_signal,
         "main_contract_changed": signal.main_contract_changed,
+        "daily_price_change": signal.daily_price_change,
+        "daily_open_interest_change": signal.daily_open_interest_change,
+        "daily_basis_change_bp": signal.daily_basis_change_bp,
     }
 
 

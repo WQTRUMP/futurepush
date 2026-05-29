@@ -1,7 +1,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from futures_signal.models import FutureQuote, HistoricalProductSnapshot, MarketSnapshot, SpotQuote
+from futures_signal.models import FutureQuote, HistoricalProductSnapshot, MarketSnapshot, PositionRankSignal, SpotQuote
 from futures_signal.scoring import analyze_market
 
 
@@ -77,3 +77,51 @@ def test_band_change_alert():
     snapshot, refs = _snapshot(now)
     analysis = analyze_market(snapshot, refs, {}, 45, "中性震荡")
     assert "评分档位变化: 中性震荡 -> 期现共振偏多" in analysis.reasons
+
+
+def test_daily_open_interest_change_is_calculated():
+    now = datetime(2026, 5, 27, 10, 0, tzinfo=TZ)
+    snapshot, refs = _snapshot(now)
+    daily_refs = {
+        product: HistoricalProductSnapshot(
+            timestamp=datetime(2026, 5, 26, 15, 0, tzinfo=TZ),
+            product=product,
+            contract=f"{product}2606",
+            futures_price=refs[product].futures_price - 5,
+            spot_price=refs[product].spot_price,
+            basis_bp=refs[product].basis_bp - 2,
+            volume=9000,
+            open_interest=19000,
+        )
+        for product in refs
+    }
+
+    analysis = analyze_market(snapshot, refs, {}, None, None, daily_references=daily_refs)
+
+    signal = analysis.signals["IF"]
+    assert signal.daily_open_interest_change == signal.open_interest - 19000
+    assert signal.daily_price_change == signal.futures_price - daily_refs["IF"].futures_price
+    assert round(signal.daily_basis_change_bp, 6) == round(signal.basis_bp - daily_refs["IF"].basis_bp, 6)
+
+
+def test_net_short_change_is_carried_into_signal_and_score():
+    now = datetime(2026, 5, 27, 10, 0, tzinfo=TZ)
+    snapshot, refs = _snapshot(now)
+    snapshot = MarketSnapshot(
+        timestamp=snapshot.timestamp,
+        futures=snapshot.futures,
+        spots=snapshot.spots,
+        positions={
+            "IM": PositionRankSignal("IM", net_short_top20=3000, net_short_change_top20=1500, citic_net_short_change=749),
+            "IC": PositionRankSignal("IC", net_short_top20=2000, net_short_change_top20=1300),
+            "IH": PositionRankSignal("IH", net_short_top20=1000, net_short_change_top20=500),
+            "IF": PositionRankSignal("IF", net_short_top20=-1000, net_short_change_top20=-1200),
+        },
+    )
+
+    analysis = analyze_market(snapshot, refs, {}, None, None)
+
+    assert analysis.signals["IM"].net_short_change_top20 == 1500
+    assert analysis.signals["IM"].citic_net_short_change == 749
+    assert "前20净空扩大: IC,IM" in analysis.reasons
+    assert analysis.components["position_rank"] < 50

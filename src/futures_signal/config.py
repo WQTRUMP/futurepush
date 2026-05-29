@@ -47,6 +47,8 @@ class Settings:
     trade_calendar_cache_path: Path
     fetch_term_structure: bool
     fetch_term_structure_every_seconds: int
+    fetch_position_rank: bool
+    position_trend_days: int
     dividend_season_adjust: bool
     basis_history_days: int
     roll_window_days: int
@@ -62,6 +64,11 @@ class Settings:
     log_level: str
     data_dir: Path
     db_path: Path
+    push_policy: str = "daily"
+    daily_push_times: str = "09:35,10:30,14:30"
+    daily_push_window_seconds: int = 600
+    daily_alert_cooldown_seconds: int = 82800
+    urgent_alert_cooldown_seconds: int = 3600
 
     @property
     def tz(self) -> ZoneInfo:
@@ -77,11 +84,18 @@ class Settings:
             sample_interval_seconds=_int_env("SAMPLE_INTERVAL_SECONDS", 60),
             alert_cooldown_seconds=_int_env("ALERT_COOLDOWN_SECONDS", 300),
             push_every_sample=_bool_env("PUSH_EVERY_SAMPLE", False),
+            push_policy=os.getenv("PUSH_POLICY", "daily").strip().lower() or "daily",
+            daily_push_times=os.getenv("DAILY_PUSH_TIMES", "09:35,10:30,14:30").strip() or "09:35,10:30,14:30",
+            daily_push_window_seconds=_int_env("DAILY_PUSH_WINDOW_SECONDS", 600),
+            daily_alert_cooldown_seconds=_int_env("DAILY_ALERT_COOLDOWN_SECONDS", 82800),
+            urgent_alert_cooldown_seconds=_int_env("URGENT_ALERT_COOLDOWN_SECONDS", 3600),
             run_outside_market_hours=_bool_env("RUN_OUTSIDE_MARKET_HOURS", False),
             use_trade_calendar=_bool_env("USE_TRADE_CALENDAR", True),
             trade_calendar_cache_path=Path(os.getenv("TRADE_CALENDAR_CACHE_PATH", str(data_dir / "trade_dates.json"))),
             fetch_term_structure=_bool_env("FETCH_TERM_STRUCTURE", True),
             fetch_term_structure_every_seconds=_int_env("FETCH_TERM_STRUCTURE_EVERY_SECONDS", 300),
+            fetch_position_rank=_bool_env("FETCH_POSITION_RANK", True),
+            position_trend_days=_int_env("POSITION_TREND_DAYS", 5),
             dividend_season_adjust=_bool_env("DIVIDEND_SEASON_ADJUST", True),
             basis_history_days=_int_env("BASIS_HISTORY_DAYS", 20),
             roll_window_days=_int_env("ROLL_WINDOW_DAYS", 7),
