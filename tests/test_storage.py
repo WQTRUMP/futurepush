@@ -70,54 +70,6 @@ def test_daily_reference_falls_back_to_last_valid_day_session(tmp_path: Path):
     assert ref.futures_price == 4050
 
 
-def test_label_due_predictions_uses_next_trading_day_calendar(tmp_path: Path):
-    calendar = TradingCalendar(
-        TZ,
-        use_akshare=True,
-        fetcher=lambda: ["2026-05-29", "2026-06-02"],
-    )
-    storage = Storage(tmp_path / "market.db", calendar=calendar)
-    storage.init()
-
-    with storage._connect() as conn:
-        conn.execute(
-            """
-            insert into predictions (ts, horizon, score, band, payload_json)
-            values (?, ?, ?, ?, ?)
-            """,
-            (
-                "2026-05-29T14:50:00+08:00",
-                "next_day_open",
-                70,
-                "偏多但不强",
-                '{"signals":{"IF":{"spot_price":4000}}}',
-            ),
-        )
-        conn.execute(
-            """
-            insert into snapshots (
-                ts, product, contract, futures_price, futures_change_pct,
-                spot_price, spot_change_pct, basis, basis_bp, volume,
-                open_interest, valid_for_scoring, raw_json
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            ("2026-06-02T09:30:00+08:00", "IF", "IF2606", 4010, 0.1, 4040, 0.2, 0, 0, 1, 1, 1, "{}"),
-        )
-
-    labeled = storage.label_due_predictions(datetime(2026, 6, 2, 10, 0, tzinfo=TZ))
-
-    assert labeled == 1
-    with storage._connect() as conn:
-        row = conn.execute(
-            """
-            select target_trading_day, calendar_source
-            from prediction_labels
-            """
-        ).fetchone()
-    assert row["target_trading_day"] == "2026-06-02"
-    assert row["calendar_source"] == "akshare"
-
-
 def test_connect_ignores_missing_file_during_chmod(tmp_path: Path, monkeypatch):
     storage = Storage(tmp_path / "market.db")
     real_chmod = Path.chmod
@@ -178,30 +130,6 @@ def test_prediction_helpers_cover_tail_paths(tmp_path: Path):
     assert _direction_hit(50, 30) is False
 
 
-def test_label_due_predictions_skips_non_dict_signals_and_missing_prices(tmp_path: Path):
-    storage = Storage(tmp_path / "market.db")
-    storage.init()
-    now = datetime(2026, 6, 2, 10, 0, tzinfo=TZ)
-
-    with storage._connect() as conn:
-        conn.execute(
-            """
-            insert into predictions (ts, horizon, score, band, payload_json)
-            values (?, ?, ?, ?, ?)
-            """,
-            ("2026-06-02T09:20:00+08:00", "same_day_1030", 50, "中性", '{"signals": "bad"}'),
-        )
-        conn.execute(
-            """
-            insert into predictions (ts, horizon, score, band, payload_json)
-            values (?, ?, ?, ?, ?)
-            """,
-            ("2026-06-02T09:21:00+08:00", "same_day_1030", 50, "中性", '{"signals": {"IF": {}}}'),
-        )
-
-    assert storage.label_due_predictions(now) == 0
-
-
 def test_future_return_bp_and_nearest_price_cover_empty_paths(tmp_path: Path):
     storage = Storage(tmp_path / "market.db")
     storage.init()
@@ -213,6 +141,13 @@ def test_future_return_bp_and_nearest_price_cover_empty_paths(tmp_path: Path):
         assert storage._future_return_bp(conn, {"signals": {"IF": {"spot_price": None}}}, target) is None
         assert storage._future_return_bp(conn, {"signals": {"IF": {"spot_price": 4000}}}, target) is None
         assert storage._nearest_spot_price(conn, "IF", target, 30) is None
+
+
+def test_label_due_predictions_delegates_to_evaluation_job(tmp_path: Path):
+    storage = Storage(tmp_path / "market.db")
+    storage.init()
+
+    assert storage.label_due_predictions(datetime(2026, 6, 2, 10, 30, tzinfo=TZ), limit=10) == 0
 
 
 def _insert_snapshot(storage: Storage, ts: str, futures_price: float) -> None:

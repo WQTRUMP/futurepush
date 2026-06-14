@@ -244,9 +244,6 @@ def test_persist_analysis_side_effects_skips_when_not_persisting(tmp_path: Path)
         def save_analysis(self, analysis):
             calls.append("save_analysis")
 
-        def label_due_predictions(self, timestamp):
-            calls.append("label_due_predictions")
-
     service.persist_analysis_side_effects(
         FakeStorage(),
         _analysis(datetime(2026, 5, 27, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))),
@@ -254,6 +251,19 @@ def test_persist_analysis_side_effects_skips_when_not_persisting(tmp_path: Path)
     )
 
     assert calls == []
+
+
+def test_persist_analysis_side_effects_only_saves_online_analysis(tmp_path: Path):
+    calls = []
+
+    class FakeStorage:
+        def save_analysis(self, analysis):
+            calls.append(("save_analysis", analysis.timestamp))
+
+    analysis = _analysis(datetime(2026, 5, 27, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
+    service.persist_analysis_side_effects(FakeStorage(), analysis, True)
+
+    assert calls == [("save_analysis", analysis.timestamp)]
 
 
 def test_dispatch_alert_if_needed_builds_default_messenger(tmp_path: Path, monkeypatch):

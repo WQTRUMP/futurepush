@@ -13,6 +13,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 python -m futures_signal test-wecom
 python -m futures_signal once
+python -m futures_signal evaluate
 ```
 
 运行态健康检查请在服务进程存活期间验证；不要把 `python -m futures_signal run` 和 `curl` 写成同一条串行前台命令。可用两个终端，或按下面方式后台启动后再探测：
@@ -74,6 +75,13 @@ WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx-
 python -m futures_signal once --save-outside-market
 ```
 
+在线链路现在只负责登记 `predictions`，到期后补写 `prediction_labels` 需要单独运行评估任务；这避免了采样时把历史回标 SQL 同步绑在主流程里。可通过定时任务调用：
+
+```bash
+python -m futures_signal evaluate
+python -m futures_signal evaluate --until 2026-06-02T10:30:00+08:00 --limit 200
+```
+
 交易日历会缓存到 `data/trade_dates.json`。若 AkShare 日历接口临时失败，服务会优先使用缓存；没有缓存时才退回工作日判断。
 
 ## CLI
@@ -83,6 +91,7 @@ python -m futures_signal run
 python -m futures_signal once
 python -m futures_signal once --save-outside-market
 python -m futures_signal once --push
+python -m futures_signal evaluate
 python -m futures_signal test-wecom
 python -m futures_signal calendar
 ```

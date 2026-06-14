@@ -122,7 +122,6 @@ def persist_analysis_side_effects(storage: Storage, analysis: MarketAnalysis, sh
     if not should_persist:
         return
     storage.save_analysis(analysis)
-    storage.label_due_predictions(analysis.timestamp)
 
 
 def dispatch_alert_if_needed(

@@ -15,6 +15,22 @@ TAIL_PREDICTION_START = time(14, 30)
 PREDICTION_DAY_END = time(15, 5)
 
 
+class PendingPrediction:
+    def __init__(
+        self,
+        prediction_id: int,
+        timestamp: datetime,
+        horizon: str,
+        score: int,
+        payload: dict[str, Any],
+    ):
+        self.prediction_id = prediction_id
+        self.timestamp = timestamp
+        self.horizon = horizon
+        self.score = score
+        self.payload = payload
+
+
 class Storage:
     def __init__(self, db_path: Path, calendar: TradingCalendar | None = None):
         self.db_path = db_path
@@ -321,8 +337,11 @@ class Storage:
                     ),
                 )
 
-    def label_due_predictions(self, now: datetime) -> int:
-        labeled = 0
+    @property
+    def calendar_source(self) -> str:
+        return self.calendar.source if self.calendar is not None else "weekday"
+
+    def list_unlabeled_predictions(self, limit: int = 500) -> list[PendingPrediction]:
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -332,38 +351,77 @@ class Storage:
                     select 1 from prediction_labels l where l.prediction_id = p.id
                 )
                 order by p.ts asc
-                limit 500
-                """
+                limit ?
+                """,
+                (limit,),
             ).fetchall()
-            for row in rows:
-                pred_ts = datetime.fromisoformat(row["ts"])
-                target = _target_time(pred_ts, row["horizon"], self.calendar)
-                if target is None or target > now:
-                    continue
-                payload = json.loads(row["payload_json"])
-                future_return = self._future_return_bp(conn, payload, target)
-                if future_return is None:
-                    continue
-                hit = _direction_hit(int(row["score"]), future_return)
-                conn.execute(
-                    """
-                    insert or ignore into prediction_labels (
-                        prediction_id, target, future_return_bp, direction_hit, labeled_at,
-                        target_trading_day, calendar_source
-                    ) values (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        row["id"],
-                        row["horizon"],
-                        future_return,
-                        1 if hit else 0,
-                        _dt(now),
-                        target.date().isoformat(),
-                        self.calendar.source if self.calendar is not None else "weekday",
-                    ),
+        return [
+            PendingPrediction(
+                prediction_id=int(row["id"]),
+                timestamp=datetime.fromisoformat(row["ts"]),
+                horizon=str(row["horizon"]),
+                score=int(row["score"]),
+                payload=json.loads(row["payload_json"]),
+            )
+            for row in rows
+        ]
+
+    def count_unlabeled_predictions(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                select count(*)
+                from predictions p
+                where not exists (
+                    select 1 from prediction_labels l where l.prediction_id = p.id
                 )
-                labeled += 1
-        return labeled
+                """
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def save_prediction_label(
+        self,
+        *,
+        prediction_id: int,
+        target: str,
+        future_return_bp: float,
+        direction_hit: bool,
+        labeled_at: datetime,
+        target_trading_day: str,
+        calendar_source: str,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                insert or ignore into prediction_labels (
+                    prediction_id, target, future_return_bp, direction_hit, labeled_at,
+                    target_trading_day, calendar_source
+                ) values (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    prediction_id,
+                    target,
+                    future_return_bp,
+                    1 if direction_hit else 0,
+                    _dt(labeled_at),
+                    target_trading_day,
+                    calendar_source,
+                ),
+            )
+
+    def label_due_predictions(self, now: datetime, limit: int = 500) -> int:
+        from .prediction_evaluator import PredictionEvaluationJob
+
+        return PredictionEvaluationJob(self).run(now, limit=limit).labeled
+
+    def resolve_future_return_bp(
+        self,
+        payload: dict[str, Any],
+        target: datetime,
+        window_minutes: int = 30,
+    ) -> float | None:
+        with self._connect() as conn:
+            return self._future_return_bp(conn, payload, target, window_minutes)
 
     def _future_return_bp(
         self,

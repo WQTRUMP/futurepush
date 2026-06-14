@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -10,6 +11,7 @@ from .akshare_source import AkShareDataSource
 from .config import Settings
 from .formatting import format_once_output
 from .market_calendar import TradingCalendar
+from .prediction_evaluator import PredictionEvaluationJob
 from .service import run_forever, run_once, setup_runtime_dirs
 from .storage import Storage
 from .wecom import WeComClient
@@ -33,6 +35,9 @@ def main(argv: list[str] | None = None) -> None:
     subparsers.add_parser("test-ai", help="用 DeepSeek 生成一次 AI 点评测试")
     subparsers.add_parser("init-db", help="初始化 SQLite 表结构")
     subparsers.add_parser("calendar", help="查看今天是否为交易日及下一次采样时间")
+    evaluate_parser = subparsers.add_parser("evaluate", help="补齐到期预测标签")
+    evaluate_parser.add_argument("--until", help="评估截止时间，默认当前时间，支持 ISO 8601")
+    evaluate_parser.add_argument("--limit", type=int, default=500, help="单次最多扫描多少条未打标预测")
 
     args = parser.parse_args(argv)
     settings = Settings.from_env()
@@ -118,9 +123,29 @@ def main(argv: list[str] | None = None) -> None:
         print(f"\nWeCom pushed: {pushed}")
         return
 
+    if args.command == "evaluate":
+        until = _parse_until_argument(args.until, settings)
+        result = PredictionEvaluationJob(storage).run(until=until, limit=args.limit)
+        print(f"evaluated_at: {result.evaluated_at.isoformat(timespec='seconds')}")
+        print(f"scanned: {result.scanned}")
+        print(f"labeled: {result.labeled}")
+        print(f"skipped_not_due: {result.skipped_not_due}")
+        print(f"skipped_missing_samples: {result.skipped_missing_samples}")
+        print(f"remaining_unlabeled: {result.remaining_unlabeled}")
+        return
+
     if args.command == "init-db":
         print(f"SQLite initialized: {settings.db_path}")
         return
+
+
+def _parse_until_argument(value: str | None, settings: Settings) -> datetime:
+    if value is None:
+        return datetime.now(settings.tz)
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=settings.tz)
+    return parsed.astimezone(settings.tz)
 
 
 def configure_logging(settings: Settings) -> None:

@@ -1,5 +1,6 @@
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 
 from futures_signal.cli import _SensitiveDataFilter, configure_logging, main
@@ -124,3 +125,57 @@ def test_main_init_db_uses_calendar_aware_storage(tmp_path, monkeypatch, capsys)
     assert isinstance(created["calendar"], FakeCalendar)
     assert created["inited"] is True
     assert str(settings.db_path) in output
+
+
+def test_main_evaluate_runs_prediction_job(tmp_path, monkeypatch, capsys):
+    settings = _settings(tmp_path)
+    created = {}
+
+    class FakeCalendar:
+        source = "weekday"
+
+    class FakeStorage:
+        def __init__(self, db_path, calendar):
+            created["db_path"] = db_path
+            created["calendar"] = calendar
+
+        def init(self):
+            created["inited"] = True
+
+    class FakeJob:
+        def __init__(self, storage):
+            created["job_storage"] = storage
+
+        def run(self, until, limit):
+            created["until"] = until
+            created["limit"] = limit
+            return type(
+                "Result",
+                (),
+                {
+                    "evaluated_at": until,
+                    "scanned": 7,
+                    "labeled": 3,
+                    "skipped_not_due": 2,
+                    "skipped_missing_samples": 2,
+                    "remaining_unlabeled": 4,
+                },
+            )()
+
+    monkeypatch.setattr("futures_signal.cli.Settings.from_env", classmethod(lambda cls: settings))
+    monkeypatch.setattr("futures_signal.cli.configure_logging", lambda _settings: None)
+    monkeypatch.setattr("futures_signal.cli.setup_runtime_dirs", lambda _settings: None)
+    monkeypatch.setattr("futures_signal.cli.TradingCalendar", lambda *args, **kwargs: FakeCalendar())
+    monkeypatch.setattr("futures_signal.cli.Storage", FakeStorage)
+    monkeypatch.setattr("futures_signal.cli.PredictionEvaluationJob", FakeJob)
+
+    main(["evaluate", "--until", "2026-06-02T10:30:00+08:00", "--limit", "25"])
+
+    output = capsys.readouterr().out
+    assert created["db_path"] == settings.db_path
+    assert isinstance(created["calendar"], FakeCalendar)
+    assert created["inited"] is True
+    assert created["until"] == datetime.fromisoformat("2026-06-02T10:30:00+08:00")
+    assert created["limit"] == 25
+    assert "scanned: 7" in output
+    assert "remaining_unlabeled: 4" in output
