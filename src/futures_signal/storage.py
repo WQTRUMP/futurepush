@@ -140,19 +140,7 @@ class Storage:
         cutoff = now - timedelta(minutes=lookback_minutes)
         oldest = now - timedelta(minutes=max_age_minutes)
         with self._connect() as conn:
-            row = conn.execute(
-                """
-                select ts, product, contract, futures_price, spot_price, basis_bp, volume, open_interest
-                from snapshots
-                where product = ? and ts <= ? and ts >= ?
-                  and coalesce(valid_for_scoring, 1) = 1
-                  and (substr(ts, 12, 8) between '09:30:00' and '11:30:59'
-                       or substr(ts, 12, 8) between '13:00:00' and '15:00:59')
-                order by ts desc
-                limit 1
-                """,
-                (product, _dt(cutoff), _dt(oldest)),
-            ).fetchone()
+            row = self._reference_snapshot_row(conn, product, cutoff, oldest)
         if row is None:
             return None
         return HistoricalProductSnapshot(
@@ -165,6 +153,27 @@ class Storage:
             volume=row["volume"],
             open_interest=row["open_interest"],
         )
+
+    def _reference_snapshot_row(
+        self,
+        conn: sqlite3.Connection,
+        product: str,
+        cutoff: datetime,
+        oldest: datetime,
+    ) -> sqlite3.Row | None:
+        return conn.execute(
+            """
+            select ts, product, contract, futures_price, spot_price, basis_bp, volume, open_interest
+            from snapshots
+            where product = ? and ts <= ? and ts >= ?
+              and coalesce(valid_for_scoring, 1) = 1
+              and (substr(ts, 12, 8) between '09:30:00' and '11:30:59'
+                   or substr(ts, 12, 8) between '13:00:00' and '15:00:59')
+            order by ts desc
+            limit 1
+            """,
+            (product, _dt(cutoff), _dt(oldest)),
+        ).fetchone()
 
     def get_daily_reference_snapshot(self, product: str, now: datetime) -> HistoricalProductSnapshot | None:
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -222,43 +231,136 @@ class Storage:
 
     def latest_contracts(self) -> dict[str, str]:
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                select product, contract
-                from snapshots s
-                where ts = (
-                    select max(ts) from snapshots
-                    where product = s.product and coalesce(valid_for_scoring, 1) = 1
-                )
-                and coalesce(valid_for_scoring, 1) = 1
-                """
-            ).fetchall()
+            rows = self._latest_contract_rows(conn)
         return {row["product"]: row["contract"] for row in rows}
+
+    def _latest_contract_rows(self, conn: sqlite3.Connection) -> list[sqlite3.Row]:
+        return conn.execute(
+            """
+            select product, contract
+            from snapshots s
+            where ts = (
+                select max(ts) from snapshots
+                where product = s.product and coalesce(valid_for_scoring, 1) = 1
+            )
+            and coalesce(valid_for_scoring, 1) = 1
+            """
+        ).fetchall()
 
     def latest_score(self) -> tuple[int | None, str | None]:
         with self._connect() as conn:
-            row = conn.execute("select score, band from scores order by ts desc limit 1").fetchone()
+            row = self._latest_score_row(conn)
         if row is None:
             return None, None
         return int(row["score"]), str(row["band"])
 
+    def _latest_score_row(self, conn: sqlite3.Connection) -> sqlite3.Row | None:
+        return conn.execute("select score, band from scores order by ts desc limit 1").fetchone()
+
     def get_basis_history(self, product: str, now: datetime, days: int = 20) -> list[float]:
         oldest = now - timedelta(days=days)
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                select basis_bp
-                from snapshots
-                where product = ? and ts >= ? and ts < ?
-                  and coalesce(valid_for_scoring, 1) = 1
-                  and substr(ts, 12, 5) = ?
-                  and (substr(ts, 12, 8) between '09:30:00' and '11:30:59'
-                       or substr(ts, 12, 8) between '13:00:00' and '15:00:59')
-                order by ts asc
-                """,
-                (product, _dt(oldest), _dt(now), now.strftime("%H:%M")),
-            ).fetchall()
+            rows = self._basis_history_rows(conn, product, oldest, now)
         return [float(row["basis_bp"]) for row in rows]
+
+    def _basis_history_rows(
+        self,
+        conn: sqlite3.Connection,
+        product: str,
+        oldest: datetime,
+        now: datetime,
+    ) -> list[sqlite3.Row]:
+        return conn.execute(
+            """
+            select basis_bp
+            from snapshots
+            where product = ? and ts >= ? and ts < ?
+              and coalesce(valid_for_scoring, 1) = 1
+              and substr(ts, 12, 5) = ?
+              and (substr(ts, 12, 8) between '09:30:00' and '11:30:59'
+                   or substr(ts, 12, 8) between '13:00:00' and '15:00:59')
+            order by ts asc
+            """,
+            (product, _dt(oldest), _dt(now), now.strftime("%H:%M")),
+        ).fetchall()
+
+    def load_analysis_inputs(
+        self,
+        products: tuple[str, ...],
+        now: datetime,
+        basis_history_days: int,
+    ) -> tuple[
+        dict[str, HistoricalProductSnapshot | None],
+        dict[str, HistoricalProductSnapshot | None],
+        dict[str, list[float]],
+        dict[str, str],
+        int | None,
+        str | None,
+    ]:
+        references: dict[str, HistoricalProductSnapshot | None] = {}
+        daily_references: dict[str, HistoricalProductSnapshot | None] = {}
+        basis_histories: dict[str, list[float]] = {}
+        cutoff = now - timedelta(minutes=5)
+        oldest = now - timedelta(minutes=30)
+        basis_oldest = now - timedelta(days=basis_history_days)
+        with self._connect() as conn:
+            for product in products:
+                row = self._reference_snapshot_row(conn, product, cutoff, oldest)
+                references[product] = None if row is None else HistoricalProductSnapshot(
+                    timestamp=datetime.fromisoformat(row["ts"]),
+                    product=row["product"],
+                    contract=row["contract"],
+                    futures_price=row["futures_price"],
+                    spot_price=row["spot_price"],
+                    basis_bp=row["basis_bp"],
+                    volume=row["volume"],
+                    open_interest=row["open_interest"],
+                )
+                daily_references[product] = self._daily_reference_snapshot(conn, product, now)
+                basis_rows = self._basis_history_rows(conn, product, basis_oldest, now)
+                basis_histories[product] = [float(item["basis_bp"]) for item in basis_rows]
+            latest_contracts = {row["product"]: row["contract"] for row in self._latest_contract_rows(conn)}
+            score_row = self._latest_score_row(conn)
+        previous_score = None if score_row is None else int(score_row["score"])
+        previous_band = None if score_row is None else str(score_row["band"])
+        return references, daily_references, basis_histories, latest_contracts, previous_score, previous_band
+
+    def _daily_reference_snapshot(
+        self,
+        conn: sqlite3.Connection,
+        product: str,
+        now: datetime,
+    ) -> HistoricalProductSnapshot | None:
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        oldest = day_start - timedelta(days=14)
+        row = self._reference_row(
+            conn,
+            product,
+            day_start,
+            oldest,
+            "and substr(ts, 12, 8) between '14:55:00' and '15:00:59'",
+        )
+        if row is None:
+            row = self._reference_row(
+                conn,
+                product,
+                day_start,
+                oldest,
+                "and (substr(ts, 12, 8) between '09:30:00' and '11:30:59' "
+                "or substr(ts, 12, 8) between '13:00:00' and '15:00:59')",
+            )
+        if row is None:
+            return None
+        return HistoricalProductSnapshot(
+            timestamp=datetime.fromisoformat(row["ts"]),
+            product=row["product"],
+            contract=row["contract"],
+            futures_price=row["futures_price"],
+            spot_price=row["spot_price"],
+            basis_bp=row["basis_bp"],
+            volume=row["volume"],
+            open_interest=row["open_interest"],
+        )
 
     def save_analysis(self, analysis: MarketAnalysis) -> None:
         payload = _analysis_payload(analysis)

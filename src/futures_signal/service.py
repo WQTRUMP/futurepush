@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from .ai_commentary import AICommentaryClient, AICommentaryError
@@ -12,13 +12,26 @@ from .data_sources import MarketDataSource
 from .formatting import format_analysis
 from .health import HealthState, start_healthcheck_server
 from .market_calendar import TradingCalendar
-from .models import MarketAnalysis, MarketSnapshot
+from .models import MarketAnalysis, MarketSnapshot, PRODUCTS
 from .scoring import analyze_market
 from .storage import Storage
 from .validation import QuoteValidator
 from .wecom import WeComClient
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SamplingContext:
+    fetched_snapshot: MarketSnapshot
+    snapshot: MarketSnapshot
+    should_persist: bool
+    references: dict[str, object | None]
+    daily_references: dict[str, object | None]
+    basis_histories: dict[str, list[float]]
+    latest_contracts: dict[str, str]
+    previous_score: int | None
+    previous_band: str | None
 
 
 def run_once(
@@ -31,66 +44,119 @@ def run_once(
     save_outside_market: bool = False,
     calendar: TradingCalendar | None = None,
 ) -> tuple[MarketAnalysis, bool]:
-    snapshot = source.fetch()
     calendar = calendar or TradingCalendar(
         settings.tz,
         use_akshare=settings.use_trade_calendar,
         cache_path=settings.trade_calendar_cache_path,
     )
-    snapshot, should_persist = _prepare_snapshot(settings, snapshot, calendar, save_outside_market)
-    references = {
-        product: storage.get_reference_snapshot(product, snapshot.timestamp)
-        for product in ("IF", "IH", "IC", "IM")
-    }
-    daily_references = {
-        product: storage.get_daily_reference_snapshot(product, snapshot.timestamp)
-        for product in ("IF", "IH", "IC", "IM")
-    }
-    basis_histories = {
-        product: storage.get_basis_history(product, snapshot.timestamp, settings.basis_history_days)
-        for product in ("IF", "IH", "IC", "IM")
-    }
-    latest_contracts = storage.latest_contracts()
-    previous_score, previous_band = storage.latest_score()
-    analysis = analyze_market(
-        snapshot,
+    context = build_sampling_context(
+        settings,
+        storage,
+        source,
+        calendar,
+        save_outside_market,
+    )
+    analysis = execute_analysis(settings, context)
+    persist_analysis_side_effects(storage, analysis, context.should_persist)
+    should_push = dispatch_alert_if_needed(
+        settings,
+        storage,
+        analysis,
+        context.should_persist,
+        push=push,
+        messenger=messenger,
+        ai_client=ai_client,
+    )
+    return analysis, should_push
+
+
+def build_sampling_context(
+    settings: Settings,
+    storage: Storage,
+    source: MarketDataSource,
+    calendar: TradingCalendar,
+    save_outside_market: bool,
+) -> SamplingContext:
+    fetched_snapshot = source.fetch()
+    snapshot, should_persist = _prepare_snapshot(settings, fetched_snapshot, calendar, save_outside_market)
+    (
         references,
+        daily_references,
+        basis_histories,
         latest_contracts,
         previous_score,
         previous_band,
-        basis_histories=basis_histories,
+    ) = storage.load_analysis_inputs(PRODUCTS, snapshot.timestamp, settings.basis_history_days)
+    return SamplingContext(
+        fetched_snapshot=fetched_snapshot,
+        snapshot=snapshot,
+        should_persist=should_persist,
+        references=references,
         daily_references=daily_references,
+        basis_histories=basis_histories,
+        latest_contracts=latest_contracts,
+        previous_score=previous_score,
+        previous_band=previous_band,
+    )
+
+
+def execute_analysis(settings: Settings, context: SamplingContext) -> MarketAnalysis:
+    return analyze_market(
+        context.snapshot,
+        context.references,
+        context.latest_contracts,
+        context.previous_score,
+        context.previous_band,
+        basis_histories=context.basis_histories,
+        daily_references=context.daily_references,
         dividend_season_adjust=settings.dividend_season_adjust,
         roll_window_days=settings.roll_window_days,
     )
-    if should_persist:
-        storage.save_analysis(analysis)
-        storage.label_due_predictions(analysis.timestamp)
 
+
+def persist_analysis_side_effects(storage: Storage, analysis: MarketAnalysis, should_persist: bool) -> None:
+    if not should_persist:
+        return
+    storage.save_analysis(analysis)
+    storage.label_due_predictions(analysis.timestamp)
+
+
+def dispatch_alert_if_needed(
+    settings: Settings,
+    storage: Storage,
+    analysis: MarketAnalysis,
+    should_persist: bool,
+    *,
+    push: bool,
+    messenger: WeComClient | None,
+    ai_client: AICommentaryClient | None,
+) -> bool:
     kind = _alert_kind(settings, analysis)
     should_push = should_persist and push and kind is not None and not storage.has_recent_alert(
         kind,
         analysis.timestamp,
         _alert_cooldown_seconds(settings, kind),
     )
-    if should_push:
-        ai_commentary = _generate_ai_commentary(ai_client, analysis)
-        message = format_analysis(
-            analysis,
-            ai_commentary=ai_commentary,
-            include_position_trend=_is_last_daily_window(settings, analysis.timestamp, kind),
-        )
-        if messenger is None:
-            messenger = WeComClient(settings.wecom_webhook_url)
-        messenger.send_message(message)
-        storage.save_alert(
-            analysis.timestamp,
-            kind,
-            analysis.band,
-            analysis.score,
-            message,
-        )
-    return analysis, should_push
+    if not should_push:
+        return False
+
+    ai_commentary = _generate_ai_commentary(ai_client, analysis)
+    message = format_analysis(
+        analysis,
+        ai_commentary=ai_commentary,
+        include_position_trend=_is_last_daily_window(settings, analysis.timestamp, kind),
+    )
+    if messenger is None:
+        messenger = WeComClient(settings.wecom_webhook_url)
+    messenger.send_message(message)
+    storage.save_alert(
+        analysis.timestamp,
+        kind,
+        analysis.band,
+        analysis.score,
+        message,
+    )
+    return True
 
 
 def run_forever(settings: Settings) -> None:

@@ -9,7 +9,7 @@ from futures_signal import service
 from futures_signal.ai_commentary import AICommentaryError
 from futures_signal.config import Settings
 from futures_signal.models import FutureQuote, MarketAnalysis, MarketSnapshot, SpotQuote
-from futures_signal.service import _is_last_daily_window, run_once
+from futures_signal.service import _is_last_daily_window, build_sampling_context, run_once
 from futures_signal.storage import Storage
 from futures_signal.wecom import WeComClient
 
@@ -113,6 +113,36 @@ def test_daily_policy_suppresses_regular_event_outside_windows(tmp_path: Path):
     _, pushed = run_once(settings, storage, source, messenger, push=True)
 
     assert pushed is False
+
+
+def test_build_sampling_context_batches_storage_reads(tmp_path: Path):
+    settings = _settings(tmp_path, push_every_sample=False)
+    now = datetime(2026, 5, 27, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    source = FakeSource(now)
+    calls: list[tuple[tuple[str, ...], datetime, int]] = []
+
+    class SpyStorage(Storage):
+        def load_analysis_inputs(self, products, timestamp, basis_history_days):
+            calls.append((products, timestamp, basis_history_days))
+            return super().load_analysis_inputs(products, timestamp, basis_history_days)
+
+    storage = SpyStorage(settings.db_path)
+    storage.init()
+
+    context = build_sampling_context(
+        settings,
+        storage,
+        source,
+        service.TradingCalendar(
+            settings.tz,
+            use_akshare=settings.use_trade_calendar,
+            cache_path=settings.trade_calendar_cache_path,
+        ),
+        save_outside_market=False,
+    )
+
+    assert context.snapshot.timestamp == now
+    assert calls == [(("IF", "IH", "IC", "IM"), now, settings.basis_history_days)]
 
 
 def test_position_trend_only_on_last_daily_window(tmp_path: Path):
