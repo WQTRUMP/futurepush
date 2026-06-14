@@ -3,6 +3,7 @@ from pathlib import Path
 import sqlite3
 from zoneinfo import ZoneInfo
 
+from futures_signal.market_calendar import TradingCalendar
 from futures_signal.storage import Storage
 
 
@@ -66,6 +67,54 @@ def test_daily_reference_falls_back_to_last_valid_day_session(tmp_path: Path):
     assert ref is not None
     assert ref.timestamp.hour == 10
     assert ref.futures_price == 4050
+
+
+def test_label_due_predictions_uses_next_trading_day_calendar(tmp_path: Path):
+    calendar = TradingCalendar(
+        TZ,
+        use_akshare=True,
+        fetcher=lambda: ["2026-05-29", "2026-06-02"],
+    )
+    storage = Storage(tmp_path / "market.db", calendar=calendar)
+    storage.init()
+
+    with storage._connect() as conn:
+        conn.execute(
+            """
+            insert into predictions (ts, horizon, score, band, payload_json)
+            values (?, ?, ?, ?, ?)
+            """,
+            (
+                "2026-05-29T14:50:00+08:00",
+                "next_day_open",
+                70,
+                "偏多但不强",
+                '{"signals":{"IF":{"spot_price":4000}}}',
+            ),
+        )
+        conn.execute(
+            """
+            insert into snapshots (
+                ts, product, contract, futures_price, futures_change_pct,
+                spot_price, spot_change_pct, basis, basis_bp, volume,
+                open_interest, valid_for_scoring, raw_json
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("2026-06-02T09:30:00+08:00", "IF", "IF2606", 4010, 0.1, 4040, 0.2, 0, 0, 1, 1, 1, "{}"),
+        )
+
+    labeled = storage.label_due_predictions(datetime(2026, 6, 2, 10, 0, tzinfo=TZ))
+
+    assert labeled == 1
+    with storage._connect() as conn:
+        row = conn.execute(
+            """
+            select target_trading_day, calendar_source
+            from prediction_labels
+            """
+        ).fetchone()
+    assert row["target_trading_day"] == "2026-06-02"
+    assert row["calendar_source"] == "akshare"
 
 
 def _insert_snapshot(storage: Storage, ts: str, futures_price: float) -> None:

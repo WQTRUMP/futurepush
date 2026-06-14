@@ -5,6 +5,10 @@ services:
     build: .
     container_name: futures-signal
     restart: unless-stopped
+    environment:
+      APP_ENV: production
+      LOAD_DOTENV: "false"
+      ALLOW_CUSTOM_AI_BASE_URL: "false"
     env_file:
       - path: .env
         required: false

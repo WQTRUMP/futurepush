@@ -94,16 +94,16 @@ def run_once(
 
 def run_forever(settings: Settings) -> None:
     setup_runtime_dirs(settings)
-    storage = Storage(settings.db_path)
-    storage.init()
-    source = AkShareDataSource(settings)
-    messenger = WeComClient(settings.wecom_webhook_url)
-    ai_client = AICommentaryClient(settings)
     calendar = TradingCalendar(
         settings.tz,
         use_akshare=settings.use_trade_calendar,
         cache_path=settings.trade_calendar_cache_path,
     )
+    storage = Storage(settings.db_path, calendar=calendar)
+    storage.init()
+    source = AkShareDataSource(settings)
+    messenger = WeComClient(settings.wecom_webhook_url)
+    ai_client = AICommentaryClient(settings)
 
     logger.info("futures-signal started")
     while True:
@@ -140,6 +140,8 @@ def run_forever(settings: Settings) -> None:
 def setup_runtime_dirs(settings: Settings) -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.db_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.data_dir.chmod(0o700)
+    settings.db_path.parent.chmod(0o700)
 
 
 def _prepare_snapshot(
@@ -259,4 +261,4 @@ def _generate_ai_commentary(ai_client: AICommentaryClient | None, analysis: Mark
         return ai_client.generate(analysis)
     except AICommentaryError as exc:
         logger.warning("AI commentary failed: %s", exc)
-        return f"AI点评暂不可用：{exc}"
+        return "AI点评暂不可用，请查看系统日志。"

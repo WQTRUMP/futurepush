@@ -54,10 +54,10 @@ def test_fetch_spots_uses_sina_first_and_skips_em_when_complete(tmp_path, monkey
     def fake_sina():
         return pd.DataFrame(
             [
-                {"代码": "sh000300", "名称": "沪深300", "最新价": 4800, "涨跌幅": 0.1},
-                {"代码": "sh000016", "名称": "上证50", "最新价": 2900, "涨跌幅": 0.2},
-                {"代码": "sh000905", "名称": "中证500", "最新价": 8400, "涨跌幅": 0.3},
-                {"代码": "sh000852", "名称": "中证1000", "最新价": 8500, "涨跌幅": 0.4},
+                {"代码": "sh000300", "名称": "沪深300", "最新价": 4800, "涨跌幅": 0.1, "时间": "10:00:00"},
+                {"代码": "sh000016", "名称": "上证50", "最新价": 2900, "涨跌幅": 0.2, "时间": "10:00:00"},
+                {"代码": "sh000905", "名称": "中证500", "最新价": 8400, "涨跌幅": 0.3, "时间": "10:00:00"},
+                {"代码": "sh000852", "名称": "中证1000", "最新价": 8500, "涨跌幅": 0.4, "时间": "10:00:00"},
             ]
         )
 
@@ -99,6 +99,7 @@ def test_fetch_main_futures_uses_realtime_first(tmp_path, monkeypatch):
                     "changepercent": 0.1,
                     "volume": 1000,
                     "position": 2000,
+                    "ticktime": "10:00:00",
                 },
                 {
                     "symbol": f"{prefix}2606",
@@ -107,6 +108,7 @@ def test_fetch_main_futures_uses_realtime_first(tmp_path, monkeypatch):
                     "changepercent": 0.2,
                     "volume": 1100,
                     "position": 2100,
+                    "ticktime": "10:00:00",
                 },
             ]
         )
@@ -219,6 +221,13 @@ def test_fetch_positions_uses_previous_available_day_when_today_empty(tmp_path, 
 
     assert second["IM"].net_short_change_top20 == 1500
     assert calls == []
+
+
+def test_parse_tick_time_returns_none_for_invalid_value(tmp_path):
+    source = AkShareDataSource(_settings(tmp_path))
+    now = datetime(2026, 5, 28, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    assert source._parse_tick_time(now, {"ticktime": "bad"}) is None
 
 
 def test_fetch_position_trends_aggregates_recent_days(tmp_path, monkeypatch):

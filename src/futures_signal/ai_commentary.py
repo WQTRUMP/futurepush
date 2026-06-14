@@ -77,12 +77,13 @@ class AICommentaryClient:
                 },
                 json=payload,
                 timeout=self.timeout_seconds,
+                allow_redirects=False,
             )
         except requests.RequestException as exc:
             raise AICommentaryError(f"DeepSeek 请求失败: {type(exc).__name__}") from exc
 
         if not response.ok:
-            raise AICommentaryError(f"DeepSeek 返回 HTTP {response.status_code}: {response.text[:200]}")
+            raise AICommentaryError(f"DeepSeek 返回 HTTP {response.status_code}")
 
         try:
             content = response.json()["choices"][0]["message"]["content"]

@@ -13,7 +13,7 @@ class FakeResponse:
 def test_wecom_client_splits_long_messages(monkeypatch):
     calls = []
 
-    def fake_post(url, json, timeout):
+    def fake_post(url, json, timeout, allow_redirects):
         calls.append((url, json, timeout))
         return FakeResponse()
 

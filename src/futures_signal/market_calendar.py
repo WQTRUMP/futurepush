@@ -67,6 +67,22 @@ class TradingCalendar:
         local = now.astimezone(self.tz)
         return self.is_trading_day(local.date()) and is_intraday_session(local.time())
 
+    def next_trading_day(self, day: date, max_days: int = 370) -> date:
+        candidate = day + timedelta(days=1)
+        for _ in range(max_days):
+            if self.is_trading_day(candidate):
+                return candidate
+            candidate += timedelta(days=1)
+        raise RuntimeError("无法在合理范围内找到下一交易日")
+
+    def previous_trading_day(self, day: date, max_days: int = 370) -> date | None:
+        candidate = day - timedelta(days=1)
+        for _ in range(max_days):
+            if self.is_trading_day(candidate):
+                return candidate
+            candidate -= timedelta(days=1)
+        return None
+
     def seconds_until_next_session(self, now: datetime) -> int:
         local = now.astimezone(self.tz)
         today = local.date()

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from hashlib import sha256
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
+from .market_calendar import TradingCalendar
 from .models import HistoricalProductSnapshot, MarketAnalysis, ProductSignal
 
 MORNING_PREDICTION_CUTOFF = time(10, 0)
@@ -14,8 +16,9 @@ PREDICTION_DAY_END = time(15, 5)
 
 
 class Storage:
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, calendar: TradingCalendar | None = None):
         self.db_path = db_path
+        self.calendar = calendar
 
     def init(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -43,6 +46,8 @@ class Storage:
                     raw_json text not null
                 );
                 create index if not exists idx_snapshots_product_ts on snapshots(product, ts);
+                create unique index if not exists uq_snapshots_product_ts_contract
+                on snapshots(product, ts, contract);
 
                 create table if not exists scores (
                     id integer primary key autoincrement,
@@ -52,6 +57,7 @@ class Storage:
                     payload_json text not null
                 );
                 create index if not exists idx_scores_ts on scores(ts);
+                create unique index if not exists uq_scores_ts on scores(ts);
 
                 create table if not exists alerts (
                     id integer primary key autoincrement,
@@ -80,6 +86,7 @@ class Storage:
                     payload_json text not null
                 );
                 create index if not exists idx_predictions_ts on predictions(ts);
+                create unique index if not exists uq_predictions_ts_horizon on predictions(ts, horizon);
 
                 create table if not exists prediction_labels (
                     prediction_id integer not null,
@@ -92,6 +99,7 @@ class Storage:
                 """
             )
             self._ensure_snapshot_columns(conn)
+            self._ensure_prediction_label_columns(conn)
             conn.execute(
                 """
                 create index if not exists idx_snapshots_product_valid_ts
@@ -107,6 +115,16 @@ class Storage:
             "is_stale": "alter table snapshots add column is_stale integer default 0",
             "source": "alter table snapshots add column source text default 'unknown'",
             "valid_for_scoring": "alter table snapshots add column valid_for_scoring integer default 1",
+        }
+        for column, statement in migrations.items():
+            if column not in existing:
+                conn.execute(statement)
+
+    def _ensure_prediction_label_columns(self, conn: sqlite3.Connection) -> None:
+        existing = {row["name"] for row in conn.execute("pragma table_info(prediction_labels)").fetchall()}
+        migrations = {
+            "target_trading_day": "alter table prediction_labels add column target_trading_day text",
+            "calendar_source": "alter table prediction_labels add column calendar_source text",
         }
         for column, statement in migrations.items():
             if column not in existing:
@@ -248,7 +266,7 @@ class Storage:
             for signal in analysis.signals.values():
                 conn.execute(
                     """
-                    insert into snapshots (
+                    insert or ignore into snapshots (
                         ts, fetched_at, market_ts, product, contract, futures_price, futures_change_pct,
                         spot_price, spot_change_pct, basis, basis_bp, volume,
                         open_interest, is_stale, source, valid_for_scoring, raw_json
@@ -277,7 +295,7 @@ class Storage:
                 if signal.main_contract_changed:
                     conn.execute(
                         """
-                        insert into main_contract_changes (ts, product, old_contract, new_contract)
+                        insert or ignore into main_contract_changes (ts, product, old_contract, new_contract)
                         values (?, ?, ?, ?)
                         """,
                         (
@@ -288,12 +306,12 @@ class Storage:
                         ),
                     )
             conn.execute(
-                "insert into scores (ts, score, band, payload_json) values (?, ?, ?, ?)",
+                "insert or ignore into scores (ts, score, band, payload_json) values (?, ?, ?, ?)",
                 (_dt(analysis.timestamp), analysis.score, analysis.band, json.dumps(payload, ensure_ascii=False)),
             )
             for horizon in _prediction_horizons(analysis.timestamp):
                 conn.execute(
-                    "insert into predictions (ts, horizon, score, band, payload_json) values (?, ?, ?, ?, ?)",
+                    "insert or ignore into predictions (ts, horizon, score, band, payload_json) values (?, ?, ?, ?, ?)",
                     (
                         _dt(analysis.timestamp),
                         horizon,
@@ -319,7 +337,7 @@ class Storage:
             ).fetchall()
             for row in rows:
                 pred_ts = datetime.fromisoformat(row["ts"])
-                target = _target_time(pred_ts, row["horizon"])
+                target = _target_time(pred_ts, row["horizon"], self.calendar)
                 if target is None or target > now:
                     continue
                 payload = json.loads(row["payload_json"])
@@ -330,10 +348,19 @@ class Storage:
                 conn.execute(
                     """
                     insert or ignore into prediction_labels (
-                        prediction_id, target, future_return_bp, direction_hit, labeled_at
-                    ) values (?, ?, ?, ?, ?)
+                        prediction_id, target, future_return_bp, direction_hit, labeled_at,
+                        target_trading_day, calendar_source
+                    ) values (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (row["id"], row["horizon"], future_return, 1 if hit else 0, _dt(now)),
+                    (
+                        row["id"],
+                        row["horizon"],
+                        future_return,
+                        1 if hit else 0,
+                        _dt(now),
+                        target.date().isoformat(),
+                        self.calendar.source if self.calendar is not None else "weekday",
+                    ),
                 )
                 labeled += 1
         return labeled
@@ -400,12 +427,16 @@ class Storage:
         with self._connect() as conn:
             conn.execute(
                 "insert into alerts (ts, kind, band, score, message) values (?, ?, ?, ?, ?)",
-                (_dt(now), kind, band, score, message),
+                (_dt(now), kind, band, score, _alert_record(message)),
             )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        try:
+            self.db_path.chmod(0o600)
+        except FileNotFoundError:
+            pass
         return conn
 
 
@@ -424,7 +455,11 @@ def _prediction_horizons(now: datetime) -> list[str]:
     return []
 
 
-def _target_time(pred_ts: datetime, horizon: str) -> datetime | None:
+def _target_time(
+    pred_ts: datetime,
+    horizon: str,
+    calendar: TradingCalendar | None = None,
+) -> datetime | None:
     same_day_targets = {
         "same_day_1030": (10, 30),
         "same_day_1130": (11, 30),
@@ -442,11 +477,14 @@ def _target_time(pred_ts: datetime, horizon: str) -> datetime | None:
     if horizon not in next_day_targets:
         return None
     hour, minute = next_day_targets[horizon]
-    target_day = _next_weekday(pred_ts)
+    target_day = _next_trading_day(pred_ts, calendar)
     return target_day.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
-def _next_weekday(value: datetime) -> datetime:
+def _next_trading_day(value: datetime, calendar: TradingCalendar | None = None) -> datetime:
+    if calendar is not None:
+        next_day = calendar.next_trading_day(value.date())
+        return datetime.combine(next_day, value.timetz()).replace(tzinfo=value.tzinfo)
     candidate = value + timedelta(days=1)
     while candidate.weekday() >= 5:
         candidate += timedelta(days=1)
@@ -530,3 +568,10 @@ def _analysis_payload(analysis: MarketAnalysis) -> dict[str, Any]:
             for product, trend in analysis.position_trends.items()
         },
     }
+
+
+def _alert_record(message: str, preview_chars: int = 160) -> str:
+    normalized = " ".join(message.split())
+    preview = normalized[:preview_chars]
+    digest = sha256(message.encode("utf-8")).hexdigest()[:16]
+    return f"sha256:{digest} preview:{preview}"

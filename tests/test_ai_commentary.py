@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import json
+import pytest
 
 from futures_signal.ai_commentary import AICommentaryClient
 from futures_signal.models import MarketAnalysis, ProductSignal
@@ -58,7 +59,7 @@ def test_ai_commentary_prompt_requires_sector_tendency(tmp_path, monkeypatch):
         def json(self):
             return {"choices": [{"message": {"content": "总判断：中性。\n板块倾向：大金融中性。\n风险：仅供观察。"}}]}
 
-    def fake_post(url, headers, json, timeout):
+    def fake_post(url, headers, json, timeout, allow_redirects):
         captured["payload"] = json
         return FakeResponse()
 
@@ -87,6 +88,25 @@ def test_ai_commentary_prompt_requires_sector_tendency(tmp_path, monkeypatch):
     assert "daily_basis_change_bp" in user_data["signals"]["IF"]
     assert "net_short_change_top20" in user_data["signals"]["IF"]
     assert "板块倾向" in text
+
+
+def test_ai_commentary_http_error_hides_response_body(tmp_path, monkeypatch):
+    class FakeResponse:
+        ok = False
+        status_code = 502
+        text = "token=secret"
+
+    def fake_post(url, headers, json, timeout, allow_redirects):
+        return FakeResponse()
+
+    settings = _settings(tmp_path, enabled=True)
+    settings = settings.__class__(**{**settings.__dict__, "deepseek_api_key": "key"})
+    monkeypatch.setattr("futures_signal.ai_commentary.requests.post", fake_post)
+
+    client = AICommentaryClient(settings)
+
+    with pytest.raises(Exception, match="HTTP 502"):
+        client.generate(_analysis())
 
 
 def _analysis():

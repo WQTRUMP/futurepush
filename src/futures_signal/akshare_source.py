@@ -9,6 +9,7 @@ from typing import Any
 
 from .config import Settings
 from .data_sources import DataSourceError
+from .market_calendar import TradingCalendar
 from .metrics import basis, basis_bp, contract_sort_key, normalize_index_code, to_float, to_int
 from .models import (
     FutureQuote,
@@ -39,15 +40,25 @@ class AkShareDataSource:
         self._last_position_empty_at: datetime | None = None
         self._last_position_trend_date: str | None = None
         self._last_position_trends: dict[str, PositionTrendSignal] = {}
+        self.calendar = TradingCalendar(
+            settings.tz,
+            use_akshare=settings.use_trade_calendar,
+            cache_path=settings.trade_calendar_cache_path,
+        )
+        self._realtime_cache: dict[str, list[dict[str, Any]]] = {}
 
     def fetch(self) -> MarketSnapshot:
         now = datetime.now(self.settings.tz)
         warnings: list[str] = []
-        futures = self._fetch_main_futures(now, warnings)
-        spots = self._fetch_spots(now, warnings)
-        terms = self._fetch_terms_if_due(now, spots, warnings)
-        positions = self._fetch_positions_if_due(now, warnings)
-        position_trends = self._fetch_position_trends_if_due(now, warnings)
+        self._realtime_cache = {}
+        try:
+            futures = self._fetch_main_futures(now, warnings)
+            spots = self._fetch_spots(now, warnings)
+            terms = self._fetch_terms_if_due(now, spots, warnings)
+            positions = self._fetch_positions_if_due(now, warnings)
+            position_trends = self._fetch_position_trends_if_due(now, warnings)
+        finally:
+            self._realtime_cache = {}
 
         if not futures:
             raise DataSourceError("AkShare 未返回 IF/IH/IC/IM 期货主力行情")
@@ -113,11 +124,11 @@ class AkShareDataSource:
         result: dict[str, FutureQuote] = {}
         for product, config in PRODUCT_CONFIGS.items():
             try:
-                df = self._call_quiet(self.ak.futures_zh_realtime, symbol=config.future_name)
+                rows = self._realtime_rows(config.future_name)
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"{product} 逐品种期货实时源获取失败: {self._brief_error(exc)}")
                 continue
-            row = self._select_main_future_row(product, self._rows(df), preferred.get(product))
+            row = self._select_main_future_row(product, rows, preferred.get(product))
             if row is None:
                 warnings.append(f"{product} 逐品种期货实时源未找到主力合约")
                 continue
@@ -253,7 +264,7 @@ class AkShareDataSource:
                 change_pct=self._first_float(row, ["涨跌幅", "change_pct"]),
                 volume=self._first_float(row, ["成交量", "volume"], None),
                 amount=self._first_float(row, ["成交额", "amount"], None),
-                tick_time=now,
+                tick_time=self._parse_spot_tick_time(now, row),
                 raw=row,
             )
         return result
@@ -274,12 +285,12 @@ class AkShareDataSource:
         terms: dict[str, list[TermQuote]] = {}
         for product, config in PRODUCT_CONFIGS.items():
             try:
-                df = self._call_quiet(self.ak.futures_zh_realtime, symbol=config.future_name)
+                rows = self._realtime_rows(config.future_name)
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"{product} 期限结构获取失败: {self._brief_error(exc)}")
                 continue
             product_terms: list[TermQuote] = []
-            for row in self._rows(df):
+            for row in rows:
                 row_product = self._infer_product(row) or product
                 if row_product != product:
                     continue
@@ -381,7 +392,7 @@ class AkShareDataSource:
     ) -> dict[str, PositionRankSignal]:
         for day_offset in range(1, max_lookback_days + 1):
             candidate = now - timedelta(days=day_offset)
-            if candidate.weekday() >= 5:
+            if not self.calendar.is_trading_day(candidate.date()):
                 continue
             date_text = candidate.strftime("%Y%m%d")
             fallback_warnings: list[str] = []
@@ -551,12 +562,69 @@ class AkShareDataSource:
 
     def _parse_tick_time(self, now: datetime, row: dict[str, Any]) -> datetime | None:
         date_text = str(row.get("tradedate") or row.get("date") or now.date().isoformat()).strip()
-        time_text = str(row.get("ticktime") or row.get("time") or "").strip()
-        if not time_text:
-            return now
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y%m%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y%m%d %H:%M"):
+        candidates = [
+            row.get("datetime"),
+            row.get("更新时间"),
+            row.get("ticktime"),
+            row.get("time"),
+        ]
+        for candidate in candidates:
+            parsed = self._parse_datetime_value(candidate, date_text)
+            if parsed is not None:
+                return parsed
+        return None
+
+    def _parse_spot_tick_time(self, now: datetime, row: dict[str, Any]) -> datetime | None:
+        date_text = str(row.get("日期") or row.get("date") or now.date().isoformat()).strip()
+        candidates = [
+            row.get("更新时间"),
+            row.get("时间"),
+            row.get("time"),
+            row.get("datetime"),
+        ]
+        for candidate in candidates:
+            parsed = self._parse_datetime_value(candidate, date_text)
+            if parsed is not None:
+                return parsed
+        return None
+
+    def _parse_datetime_value(self, value: Any, date_text: str) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        full_formats = (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y%m%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y%m%d %H:%M",
+        )
+        for fmt in full_formats:
             try:
-                return datetime.strptime(f"{date_text} {time_text}", fmt).replace(tzinfo=self.settings.tz)
+                return datetime.strptime(text, fmt).replace(tzinfo=self.settings.tz)
             except ValueError:
                 continue
-        return now
+        try:
+            parsed = datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=self.settings.tz)
+            return parsed.astimezone(self.settings.tz)
+        except ValueError:
+            pass
+
+        time_formats = ("%H:%M:%S", "%H:%M")
+        for fmt in time_formats:
+            try:
+                combined = datetime.strptime(f"{date_text} {text}", f"%Y-%m-%d {fmt}")
+            except ValueError:
+                try:
+                    combined = datetime.strptime(f"{date_text} {text}", f"%Y%m%d {fmt}")
+                except ValueError:
+                    continue
+            return combined.replace(tzinfo=self.settings.tz)
+        return None
+
+    def _realtime_rows(self, symbol: str) -> list[dict[str, Any]]:
+        if symbol not in self._realtime_cache:
+            df = self._call_quiet(self.ak.futures_zh_realtime, symbol=symbol)
+            self._realtime_cache[symbol] = self._rows(df)
+        return self._realtime_cache[symbol]

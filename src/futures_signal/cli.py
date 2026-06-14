@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .ai_commentary import AICommentaryClient
 from .akshare_source import AkShareDataSource
@@ -90,7 +91,14 @@ def main(argv: list[str] | None = None) -> None:
             print(f"warning: {calendar.warning}")
         return
 
-    storage = Storage(settings.db_path)
+    storage = Storage(
+        settings.db_path,
+        calendar=TradingCalendar(
+            settings.tz,
+            use_akshare=settings.use_trade_calendar,
+            cache_path=settings.trade_calendar_cache_path,
+        ),
+    )
     storage.init()
 
     if args.command == "once":
@@ -117,11 +125,43 @@ def main(argv: list[str] | None = None) -> None:
 
 def configure_logging(settings: Settings) -> None:
     Path("logs").mkdir(parents=True, exist_ok=True)
+    Path("logs").chmod(0o700)
+    log_path = Path("logs/futures_signal.log")
+    log_path.touch(exist_ok=True)
+    log_path.chmod(0o600)
     logging.basicConfig(
         level=getattr(logging, settings.log_level, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler("logs/futures_signal.log", encoding="utf-8"),
+            logging.FileHandler(log_path, encoding="utf-8"),
         ],
     )
+    redaction_filter = _SensitiveDataFilter()
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(redaction_filter)
+
+
+class _SensitiveDataFilter(logging.Filter):
+    SENSITIVE_QUERY_KEYS = {"key", "token", "api_key", "authorization"}
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = self._redact(record.msg)
+        if record.args:
+            record.args = tuple(self._redact(value) if isinstance(value, str) else value for value in record.args)
+        return True
+
+    def _redact(self, value: str) -> str:
+        if "http://" not in value and "https://" not in value:
+            return value
+        parts = urlsplit(value)
+        if not parts.query:
+            return value
+        redacted_query = urlencode(
+            [
+                (key, "***" if key.lower() in self.SENSITIVE_QUERY_KEYS else item)
+                for key, item in parse_qsl(parts.query, keep_blank_values=True)
+            ]
+        )
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, redacted_query, parts.fragment))

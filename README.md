@@ -7,6 +7,7 @@
 ```bash
 cp .env.example .env
 # 填写 WECOM_WEBHOOK_URL、DEEPSEEK_API_KEY
+chmod 600 .env
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
@@ -20,6 +21,7 @@ python -m futures_signal run
 ```bash
 cp .env.example .env
 # 填写企业微信机器人 Webhook 和 DeepSeek 配置
+chmod 600 .env
 docker compose up -d --build
 docker compose logs -f
 ```
@@ -29,6 +31,13 @@ docker compose logs -f
 ```env
 WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
+
+安全约束：
+
+- `WECOM_WEBHOOK_URL` 仅允许 `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?...`
+- `DEEPSEEK_BASE_URL` 默认仅允许 `https://api.deepseek.com`
+- 如确需通过内部网关转发 AI 请求，必须显式设置 `ALLOW_CUSTOM_AI_BASE_URL=true`
+- 生产环境建议设置 `APP_ENV=production` 或 `LOAD_DOTENV=false`，避免自动信任工作目录 `.env`
 
 服务默认通过 AkShare `tool_trade_date_hist_sina` 获取 A 股交易日历，只在交易日的日盘 `09:30-11:30`、`13:00-15:00` 采样。非交易日不会抓行情，也不会推送实时信号。`once` 在非交易时段默认只展示结果，不写入数据库也不推送；如需调试写库，可使用：
 
@@ -131,6 +140,7 @@ PUSH_POLICY=event
 AI_COMMENTARY_ENABLED=true
 DEEPSEEK_API_KEY=
 DEEPSEEK_BASE_URL=https://api.deepseek.com
+ALLOW_CUSTOM_AI_BASE_URL=false
 DEEPSEEK_MODEL=deepseek-v4-pro
 DEEPSEEK_MAX_TOKENS=420
 DEEPSEEK_THINKING_ENABLED=false
@@ -191,5 +201,12 @@ AI点评
 
 - SQLite：`data/market.db`
 - 日志：`logs/futures_signal.log`
+
+运行时会主动收紧权限：
+
+- `data/`、数据库父目录、`logs/` 目录：`0700`
+- `data/market.db`、`logs/futures_signal.log`：`0600`
+
+`alerts` 表不再保存完整推送正文，只保留哈希和预览，减少策略文本长期明文落盘。
 
 AkShare 实时接口可能受上游延迟或字段变更影响；服务会在消息里提示缺失数据，并避免用空数据生成误导性信号。
