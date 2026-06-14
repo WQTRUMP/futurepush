@@ -318,6 +318,25 @@ def test_fetch_position_trends_aggregates_recent_days(tmp_path, monkeypatch):
     assert warnings == []
 
 
+def test_fetch_combines_all_subresults_and_clears_cache(tmp_path, monkeypatch):
+    source = AkShareDataSource(_settings(tmp_path))
+    now = datetime(2026, 5, 28, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    monkeypatch.setattr("futures_signal.akshare_source.datetime", type("FakeDateTime", (), {"now": staticmethod(lambda tz: now)}))
+    monkeypatch.setattr(source, "_fetch_main_futures", lambda _now, warnings: {"IF": object()})
+    monkeypatch.setattr(source, "_fetch_spots", lambda _now, warnings: {"IF": object()})
+    monkeypatch.setattr(source, "_fetch_terms_if_due", lambda _now, spots, warnings: {"IF": ["term"]})
+    monkeypatch.setattr(source, "_fetch_positions_if_due", lambda _now, warnings: {"IF": "position"})
+    monkeypatch.setattr(source, "_fetch_position_trends_if_due", lambda _now, warnings: {"IF": "trend"})
+
+    snapshot = source.fetch()
+
+    assert snapshot.terms == {"IF": ["term"]}
+    assert snapshot.positions == {"IF": "position"}
+    assert snapshot.position_trends == {"IF": "trend"}
+    assert source._realtime_cache == {}
+
+
 def test_fetch_clears_realtime_cache_even_when_fetch_fails(tmp_path, monkeypatch):
     source = AkShareDataSource(_settings(tmp_path))
 
@@ -368,6 +387,16 @@ def test_parse_datetime_value_handles_aware_isoformat(tmp_path):
     assert parsed is not None
     assert parsed.tzinfo == ZoneInfo("Asia/Shanghai")
     assert parsed.hour == 18
+
+
+def test_parse_datetime_value_assigns_timezone_to_naive_isoformat(tmp_path):
+    source = AkShareDataSource(_settings(tmp_path))
+
+    parsed = source._parse_datetime_value("2026-05-28T10:00:00", "2026-05-28")
+
+    assert parsed is not None
+    assert parsed.tzinfo == ZoneInfo("Asia/Shanghai")
+    assert parsed.hour == 10
 
 
 def test_realtime_rows_uses_symbol_cache(tmp_path, monkeypatch):

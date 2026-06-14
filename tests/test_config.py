@@ -1,3 +1,4 @@
+import builtins
 import sys
 import types
 
@@ -207,3 +208,18 @@ def test_settings_from_env_allows_custom_ai_base_url_when_enabled(tmp_path, monk
     assert called["count"] == 1
     assert settings.allow_custom_ai_base_url is True
     assert settings.deepseek_base_url == "https://gateway.example.com"
+
+
+def test_load_dotenv_ignores_missing_dependency(monkeypatch):
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "dotenv":
+            raise ImportError("missing")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("LOAD_DOTENV", "true")
+
+    config._load_dotenv()

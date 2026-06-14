@@ -117,6 +117,21 @@ def test_label_due_predictions_uses_next_trading_day_calendar(tmp_path: Path):
     assert row["calendar_source"] == "akshare"
 
 
+def test_connect_ignores_missing_file_during_chmod(tmp_path: Path, monkeypatch):
+    storage = Storage(tmp_path / "market.db")
+    real_chmod = Path.chmod
+
+    def fake_chmod(path_obj, mode):
+        if path_obj == storage.db_path:
+            raise FileNotFoundError("gone")
+        return real_chmod(path_obj, mode)
+
+    monkeypatch.setattr(Path, "chmod", fake_chmod)
+
+    with storage._connect() as conn:
+        assert conn.execute("select 1").fetchone()[0] == 1
+
+
 def _insert_snapshot(storage: Storage, ts: str, futures_price: float) -> None:
     with storage._connect() as conn:
         conn.execute(
