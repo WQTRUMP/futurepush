@@ -328,6 +328,36 @@ def test_should_push_and_alert_helpers_cover_policy_variants(tmp_path: Path, mon
     assert warnings[0] == ("invalid DAILY_PUSH_TIMES item: %s", "bad")
 
 
+def test_should_push_returns_false_when_alert_kind_is_missing(tmp_path: Path):
+    analysis = _analysis(
+        datetime(2026, 5, 27, 14, 31, tzinfo=ZoneInfo("Asia/Shanghai")),
+        alert_kind=None,
+    )
+
+    class FakeStorage:
+        def has_recent_alert(self, kind, timestamp, cooldown):
+            raise AssertionError("alert kind is missing, should not query storage")
+
+    settings = replace(_settings(tmp_path, push_every_sample=False), push_policy="event")
+
+    assert service._should_push(settings, FakeStorage(), analysis) is False
+
+
+def test_daily_window_and_last_window_skip_invalid_entries(tmp_path: Path):
+    settings = replace(_settings(tmp_path, push_every_sample=False), daily_push_times=" ,bad,,")
+    now = datetime(2026, 5, 27, 14, 31, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    assert service._daily_window_kind(settings, now) is None
+    assert service._is_last_daily_window(settings, now, "daily_20260527_1430") is False
+
+
+def test_daily_urgent_kind_uses_score_thresholds(tmp_path: Path):
+    now = datetime(2026, 5, 27, 14, 31, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    assert service._daily_urgent_kind(_analysis(now, score=80, alert_kind="watch")) == "daily_urgent_bullish"
+    assert service._daily_urgent_kind(_analysis(now, score=19, alert_kind="watch")) == "daily_urgent_bearish"
+
+
 def test_alert_kind_event_and_fallback_policy(tmp_path: Path):
     analysis = _analysis(datetime(2026, 5, 27, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")), alert_kind="watch")
 

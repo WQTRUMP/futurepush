@@ -23,6 +23,7 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+_REAL_DATETIME = datetime
 
 
 class AkShareDataSource:
@@ -379,7 +380,7 @@ class AkShareDataSource:
                 net_short_change_top20=short_change - long_change,
                 citic_net_short_change=citic_changes.get(product),
                 as_of_date=date_text,
-                lag_days=max(0, (now.date() - datetime.strptime(date_text, "%Y%m%d").date()).days),
+                lag_days=max(0, (now.date() - _REAL_DATETIME.strptime(date_text, "%Y%m%d").date()).days),
                 is_fallback=date_text != now.strftime("%Y%m%d"),
             )
         return positions
@@ -600,11 +601,11 @@ class AkShareDataSource:
         )
         for fmt in full_formats:
             try:
-                return datetime.strptime(text, fmt).replace(tzinfo=self.settings.tz)
+                return _REAL_DATETIME.strptime(text, fmt).replace(tzinfo=self.settings.tz)
             except ValueError:
                 continue
         try:
-            parsed = datetime.fromisoformat(text)
+            parsed = _REAL_DATETIME.fromisoformat(text)
             if parsed.tzinfo is None:
                 return parsed.replace(tzinfo=self.settings.tz)
             return parsed.astimezone(self.settings.tz)
@@ -614,10 +615,10 @@ class AkShareDataSource:
         time_formats = ("%H:%M:%S", "%H:%M")
         for fmt in time_formats:
             try:
-                combined = datetime.strptime(f"{date_text} {text}", f"%Y-%m-%d {fmt}")
+                combined = _REAL_DATETIME.strptime(f"{date_text} {text}", f"%Y-%m-%d {fmt}")
             except ValueError:
                 try:
-                    combined = datetime.strptime(f"{date_text} {text}", f"%Y%m%d {fmt}")
+                    combined = _REAL_DATETIME.strptime(f"{date_text} {text}", f"%Y%m%d {fmt}")
                 except ValueError:
                     continue
             return combined.replace(tzinfo=self.settings.tz)
