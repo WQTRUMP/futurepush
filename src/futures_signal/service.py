@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 
 from .ai_commentary import AICommentaryClient, AICommentaryError
-from .akshare_source import AkShareDataSource
+from .akshare_source import build_akshare_data_source
 from .config import Settings
 from .data_sources import MarketDataSource
 from .formatting import format_analysis
@@ -182,7 +182,7 @@ def run_forever(settings: Settings) -> None:
     )
     storage = Storage(settings.db_path, calendar=calendar)
     storage.init()
-    source = AkShareDataSource(settings)
+    source = build_akshare_data_source(settings)
     messenger = WeComClient(settings.wecom_webhook_url)
     ai_client = AICommentaryClient(settings)
     health_state.mark_ready()

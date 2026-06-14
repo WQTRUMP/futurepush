@@ -91,6 +91,8 @@ python -m futures_signal evaluate --until 2026-06-02T10:30:00+08:00 --limit 200
 
 `Storage` 继续保留为兼容 facade，旧调用面仍可用，但新逻辑只在内部转发到上述仓储。
 
+AkShare 在线链路当前由 `build_akshare_data_source()` 统一装配 `CompositeMarketDataSource`，`AkShareDataSource` 仅保留兼容壳。主力合约、现货、期限结构、持仓排名和持仓趋势已拆为组合式 provider，其中主力合约与期限结构继续按轮次显式共享同一个 quote bundle，持仓排名/趋势各自维护独立缓存与 fallback 状态，不再依赖单体采集器上的隐式共享字段。
+
 交易日历会缓存到 `data/trade_dates.json`。若 AkShare 日历接口临时失败，服务会优先使用缓存；没有缓存时才退回工作日判断。
 
 ## CLI

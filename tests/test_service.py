@@ -466,7 +466,7 @@ def test_run_forever_handles_open_market_success_and_error(tmp_path: Path, monke
     monkeypatch.setattr(service, "setup_runtime_dirs", lambda _settings: None)
     monkeypatch.setattr(service, "TradingCalendar", lambda *args, **kwargs: FakeCalendar())
     monkeypatch.setattr(service, "Storage", FakeStorage)
-    monkeypatch.setattr(service, "AkShareDataSource", lambda _settings: object())
+    monkeypatch.setattr(service, "build_akshare_data_source", lambda _settings: object())
     monkeypatch.setattr(service, "WeComClient", lambda webhook_url: {"webhook_url": webhook_url})
     monkeypatch.setattr(service, "AICommentaryClient", lambda _settings: object())
     monkeypatch.setattr(service, "HealthState", FakeHealthState)
@@ -529,7 +529,7 @@ def test_run_forever_uses_calendar_for_storage_and_sleep(tmp_path: Path, monkeyp
     monkeypatch.setattr(service, "setup_runtime_dirs", lambda _settings: None)
     monkeypatch.setattr(service, "TradingCalendar", lambda *args, **kwargs: FakeCalendar())
     monkeypatch.setattr(service, "Storage", FakeStorage)
-    monkeypatch.setattr(service, "AkShareDataSource", lambda _settings: object())
+    monkeypatch.setattr(service, "build_akshare_data_source", lambda _settings: object())
     monkeypatch.setattr(service, "WeComClient", lambda webhook_url: {"webhook_url": webhook_url})
     monkeypatch.setattr(service, "AICommentaryClient", lambda _settings: object())
     monkeypatch.setattr(

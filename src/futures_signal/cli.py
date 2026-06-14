@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .ai_commentary import AICommentaryClient
-from .akshare_source import AkShareDataSource
+from .akshare_source import build_akshare_data_source
 from .config import Settings
 from .formatting import format_once_output
 from .market_calendar import TradingCalendar
@@ -107,7 +107,7 @@ def main(argv: list[str] | None = None) -> None:
     storage.init()
 
     if args.command == "once":
-        source = AkShareDataSource(settings)
+        source = build_akshare_data_source(settings)
         messenger = WeComClient(settings.wecom_webhook_url) if args.push else None
         ai_client = AICommentaryClient(settings) if args.push else None
         analysis, pushed = run_once(
