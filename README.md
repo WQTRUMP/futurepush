@@ -7,12 +7,25 @@
 ```bash
 cp .env.example .env
 # 填写 WECOM_WEBHOOK_URL、DEEPSEEK_API_KEY
+chmod 600 .env
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 python -m futures_signal test-wecom
 python -m futures_signal once
-python -m futures_signal run
+python -m futures_signal evaluate
+```
+
+运行态健康检查请在服务进程存活期间验证；不要把 `python -m futures_signal run` 和 `curl` 写成同一条串行前台命令。可用两个终端，或按下面方式后台启动后再探测：
+
+```bash
+source .venv/bin/activate
+python -m futures_signal run > /tmp/futures-signal.log 2>&1 &
+FS_PID=$!
+trap 'kill $FS_PID' EXIT
+sleep 3
+curl -sS http://127.0.0.1:18080/healthz
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18080/health
 ```
 
 ## Docker 部署
@@ -20,8 +33,27 @@ python -m futures_signal run
 ```bash
 cp .env.example .env
 # 填写企业微信机器人 Webhook 和 DeepSeek 配置
+chmod 600 .env
 docker compose up -d --build
 docker compose logs -f
+curl http://127.0.0.1:18080/healthz
+```
+
+健康检查默认说明：
+
+- 裸机/虚拟环境运行 `python -m futures_signal run` 时，会同时启动只读健康检查 HTTP 入口：`http://127.0.0.1:18080/healthz`
+- 兼容路径：`/health` 与 `/healthz`
+- 响应固定返回 `200 OK` 和基础状态字段：`status`、`service`、`time`、`uptime_seconds`、`worker`、`storage`
+- 不返回 `WECOM_WEBHOOK_URL`、`DEEPSEEK_API_KEY`、评分权重、策略细节等敏感信息
+- Docker Compose 默认把容器内健康端口绑定到宿主机 `127.0.0.1:18080`，仅供本机巡检，不对公网暴露
+
+可选环境变量：
+
+```env
+HEALTHCHECK_ENABLED=true
+HEALTHCHECK_HOST=127.0.0.1
+HEALTHCHECK_PORT=18080
+HEALTHCHECK_PATH=/healthz
 ```
 
 企业微信机器人 Webhook 形如：
@@ -30,11 +62,36 @@ docker compose logs -f
 WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
 
+安全约束：
+
+- `WECOM_WEBHOOK_URL` 仅允许 `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?...`
+- `DEEPSEEK_BASE_URL` 默认仅允许 `https://api.deepseek.com`
+- 如确需通过内部网关转发 AI 请求，必须显式设置 `ALLOW_CUSTOM_AI_BASE_URL=true`
+- 生产环境建议设置 `APP_ENV=production` 或 `LOAD_DOTENV=false`，避免自动信任工作目录 `.env`
+
 服务默认通过 AkShare `tool_trade_date_hist_sina` 获取 A 股交易日历，只在交易日的日盘 `09:30-11:30`、`13:00-15:00` 采样。非交易日不会抓行情，也不会推送实时信号。`once` 在非交易时段默认只展示结果，不写入数据库也不推送；如需调试写库，可使用：
 
 ```bash
 python -m futures_signal once --save-outside-market
 ```
+
+在线链路现在只负责登记 `predictions`，到期后补写 `prediction_labels` 需要单独运行评估任务；这避免了采样时把历史回标 SQL 同步绑在主流程里。可通过定时任务调用：
+
+```bash
+python -m futures_signal evaluate
+python -m futures_signal evaluate --until 2026-06-02T10:30:00+08:00 --limit 200
+```
+
+当前 SQLite 仓储边界按职责拆为四类：
+
+- `MarketReadRepository`：在线读取参考快照、日线参考、基差历史、最新合约和上一分数
+- `AnalysisWriteRepository`：在线写入快照、分数、告警
+- `PredictionRepository`：登记与扫描未打标预测
+- `PredictionLabelRepository`：回查未来现货并写入 `prediction_labels`
+
+`Storage` 继续保留为兼容 facade，旧调用面仍可用，但新逻辑只在内部转发到上述仓储。
+
+AkShare 在线链路当前由 `build_akshare_data_source()` 统一装配 `CompositeMarketDataSource`，`AkShareDataSource` 仅保留兼容壳。主力合约、现货、期限结构、持仓排名和持仓趋势已拆为组合式 provider，其中主力合约与期限结构继续按轮次显式共享同一个 quote bundle，持仓排名/趋势各自维护独立缓存与 fallback 状态，不再依赖单体采集器上的隐式共享字段。
 
 交易日历会缓存到 `data/trade_dates.json`。若 AkShare 日历接口临时失败，服务会优先使用缓存；没有缓存时才退回工作日判断。
 
@@ -45,8 +102,37 @@ python -m futures_signal run
 python -m futures_signal once
 python -m futures_signal once --save-outside-market
 python -m futures_signal once --push
+python -m futures_signal evaluate
 python -m futures_signal test-wecom
 python -m futures_signal calendar
+```
+
+查看健康状态：
+
+```bash
+curl http://127.0.0.1:18080/healthz
+curl http://127.0.0.1:18080/health
+```
+
+示例响应：
+
+```json
+{
+  "status": "ok",
+  "service": "futures-signal",
+  "time": "2026-06-14T12:00:00+08:00",
+  "uptime_seconds": 42,
+  "worker": {
+    "status": "ok",
+    "last_sample_at": "2026-06-14T11:59:00+08:00",
+    "last_error_at": null
+  },
+  "storage": {
+    "db_path": "data/market.db",
+    "db_exists": true,
+    "db_readable": true
+  }
+}
 ```
 
 ## 评分
@@ -131,6 +217,7 @@ PUSH_POLICY=event
 AI_COMMENTARY_ENABLED=true
 DEEPSEEK_API_KEY=
 DEEPSEEK_BASE_URL=https://api.deepseek.com
+ALLOW_CUSTOM_AI_BASE_URL=false
 DEEPSEEK_MODEL=deepseek-v4-pro
 DEEPSEEK_MAX_TOKENS=420
 DEEPSEEK_THINKING_ENABLED=false
@@ -191,5 +278,12 @@ AI点评
 
 - SQLite：`data/market.db`
 - 日志：`logs/futures_signal.log`
+
+运行时会主动收紧权限：
+
+- `data/`、数据库父目录、`logs/` 目录：`0700`
+- `data/market.db`、`logs/futures_signal.log`：`0600`
+
+`alerts` 表不再保存完整推送正文，只保留哈希和预览，减少策略文本长期明文落盘。
 
 AkShare 实时接口可能受上游延迟或字段变更影响；服务会在消息里提示缺失数据，并避免用空数据生成误导性信号。

@@ -40,3 +40,24 @@ def test_quote_validator_keeps_synchronized_quotes_and_uses_market_ts():
 
     assert set(validated.futures) == {"IF"}
     assert validated.timestamp == spot_tick
+
+
+@pytest.mark.parametrize(
+    ("future_tick", "spot_tick"),
+    [
+        (None, datetime(2026, 5, 27, 10, 0, tzinfo=TZ)),
+        (datetime(2026, 5, 27, 10, 0, tzinfo=TZ), None),
+        (None, None),
+    ],
+)
+def test_quote_validator_rejects_missing_tick_time(future_tick, spot_tick):
+    now = datetime(2026, 5, 27, 10, 0, tzinfo=TZ)
+    snapshot = MarketSnapshot(
+        timestamp=now,
+        fetched_at=now,
+        futures={"IF": FutureQuote("IF", "IF2606", "IF", 4000, 0.1, 1000, 2000, future_tick)},
+        spots={"IF": SpotQuote("IF", "000300", "沪深300", 4000, 0.1, None, None, spot_tick)},
+    )
+
+    with pytest.raises(QuoteValidationError):
+        QuoteValidator(TZ).validate(snapshot)

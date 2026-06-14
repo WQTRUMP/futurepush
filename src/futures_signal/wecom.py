@@ -34,13 +34,17 @@ class WeComClient:
                 },
             },
             timeout=self.timeout_seconds,
+            allow_redirects=False,
         )
         if not response.ok:
-            raise WeComError(f"企业微信推送失败: HTTP {response.status_code} {response.text[:200]}")
+            raise WeComError(f"企业微信推送失败: HTTP {response.status_code}")
 
-        result = response.json()
+        try:
+            result = response.json()
+        except ValueError as exc:
+            raise WeComError("企业微信推送失败: 响应不是合法 JSON") from exc
         if result.get("errcode") != 0:
-            raise WeComError(f"企业微信推送失败: {result}")
+            raise WeComError(f"企业微信推送失败: errcode={result.get('errcode')}")
 
 
 def _split_text(text: str) -> list[str]:

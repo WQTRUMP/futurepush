@@ -3,15 +3,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
-
-
-def _load_dotenv() -> None:
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
-    load_dotenv()
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -33,6 +26,18 @@ def _float_env(name: str, default: float) -> float:
     if raw is None or raw.strip() == "":
         return default
     return float(raw)
+
+
+def _load_dotenv() -> None:
+    app_env = os.getenv("APP_ENV", "development").strip().lower()
+    enabled = _bool_env("LOAD_DOTENV", app_env not in {"prod", "production"})
+    if not enabled:
+        return
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    load_dotenv()
 
 
 @dataclass(frozen=True)
@@ -72,10 +77,20 @@ class Settings:
     max_quote_age_seconds: int = 180
     max_tick_sync_seconds: int = 60
     position_rank_empty_retry_seconds: int = 900
+    allow_custom_ai_base_url: bool = False
+    healthcheck_enabled: bool = True
+    healthcheck_host: str = "127.0.0.1"
+    healthcheck_port: int = 18080
+    healthcheck_path: str = "/healthz"
 
     @property
     def tz(self) -> ZoneInfo:
         return ZoneInfo(self.timezone_name)
+
+    def __post_init__(self) -> None:
+        _validate_wecom_webhook_url(self.wecom_webhook_url)
+        _validate_ai_base_url(self.deepseek_base_url, self.allow_custom_ai_base_url)
+        _validate_healthcheck(self.healthcheck_host, self.healthcheck_port, self.healthcheck_path)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -117,4 +132,38 @@ class Settings:
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
             data_dir=data_dir,
             db_path=Path(os.getenv("DB_PATH", str(data_dir / "market.db"))),
+            allow_custom_ai_base_url=_bool_env("ALLOW_CUSTOM_AI_BASE_URL", False),
+            healthcheck_enabled=_bool_env("HEALTHCHECK_ENABLED", True),
+            healthcheck_host=os.getenv("HEALTHCHECK_HOST", "127.0.0.1").strip() or "127.0.0.1",
+            healthcheck_port=_int_env("HEALTHCHECK_PORT", 18080),
+            healthcheck_path=os.getenv("HEALTHCHECK_PATH", "/healthz").strip() or "/healthz",
         )
+
+
+def _validate_wecom_webhook_url(value: str) -> None:
+    if not value:
+        return
+    parsed = urlparse(value)
+    if parsed.scheme != "https":
+        raise ValueError("WECOM_WEBHOOK_URL 必须使用 https")
+    if parsed.hostname != "qyapi.weixin.qq.com":
+        raise ValueError("WECOM_WEBHOOK_URL 仅允许企业微信官方域名 qyapi.weixin.qq.com")
+    if parsed.path != "/cgi-bin/webhook/send":
+        raise ValueError("WECOM_WEBHOOK_URL 路径必须为 /cgi-bin/webhook/send")
+
+
+def _validate_ai_base_url(value: str, allow_custom: bool) -> None:
+    parsed = urlparse(value)
+    if parsed.scheme != "https":
+        raise ValueError("DEEPSEEK_BASE_URL 必须使用 https")
+    if not allow_custom and parsed.hostname != "api.deepseek.com":
+        raise ValueError("DEEPSEEK_BASE_URL 仅允许 api.deepseek.com；如需自定义请开启 ALLOW_CUSTOM_AI_BASE_URL")
+
+
+def _validate_healthcheck(host: str, port: int, path: str) -> None:
+    if not host.strip():
+        raise ValueError("HEALTHCHECK_HOST 不能为空")
+    if not 1 <= port <= 65535:
+        raise ValueError("HEALTHCHECK_PORT 必须在 1-65535 之间")
+    if not path.startswith("/"):
+        raise ValueError("HEALTHCHECK_PATH 必须以 / 开头")

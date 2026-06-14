@@ -86,7 +86,7 @@ def _localize(value: datetime | None, tz: ZoneInfo) -> datetime | None:
 
 def _is_stale(fetched_at: datetime, tick_time: datetime | None, max_age_seconds: int) -> bool:
     if tick_time is None:
-        return False
+        return True
     return (fetched_at - tick_time).total_seconds() > max_age_seconds
 
 
@@ -96,5 +96,5 @@ def _is_out_of_sync(
     max_sync_seconds: int,
 ) -> bool:
     if future_tick is None or spot_tick is None:
-        return False
+        return True
     return abs((future_tick - spot_tick).total_seconds()) > max_sync_seconds

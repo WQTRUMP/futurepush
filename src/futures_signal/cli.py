@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import argparse
 import logging
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .ai_commentary import AICommentaryClient
-from .akshare_source import AkShareDataSource
+from .akshare_source import build_akshare_data_source
 from .config import Settings
 from .formatting import format_once_output
 from .market_calendar import TradingCalendar
+from .prediction_evaluator import PredictionEvaluationJob
 from .service import run_forever, run_once, setup_runtime_dirs
 from .storage import Storage
 from .wecom import WeComClient
@@ -32,6 +35,9 @@ def main(argv: list[str] | None = None) -> None:
     subparsers.add_parser("test-ai", help="用 DeepSeek 生成一次 AI 点评测试")
     subparsers.add_parser("init-db", help="初始化 SQLite 表结构")
     subparsers.add_parser("calendar", help="查看今天是否为交易日及下一次采样时间")
+    evaluate_parser = subparsers.add_parser("evaluate", help="补齐到期预测标签")
+    evaluate_parser.add_argument("--until", help="评估截止时间，默认当前时间，支持 ISO 8601")
+    evaluate_parser.add_argument("--limit", type=int, default=500, help="单次最多扫描多少条未打标预测")
 
     args = parser.parse_args(argv)
     settings = Settings.from_env()
@@ -90,16 +96,25 @@ def main(argv: list[str] | None = None) -> None:
             print(f"warning: {calendar.warning}")
         return
 
-    storage = Storage(settings.db_path)
+    storage = Storage(
+        settings.db_path,
+        calendar=TradingCalendar(
+            settings.tz,
+            use_akshare=settings.use_trade_calendar,
+            cache_path=settings.trade_calendar_cache_path,
+        ),
+    )
     storage.init()
 
     if args.command == "once":
-        source = AkShareDataSource(settings)
+        source = build_akshare_data_source(settings)
         messenger = WeComClient(settings.wecom_webhook_url) if args.push else None
         ai_client = AICommentaryClient(settings) if args.push else None
         analysis, pushed = run_once(
             settings,
-            storage,
+            storage.market_reads,
+            storage.analysis_writes,
+            storage.predictions,
             source,
             messenger,
             ai_client,
@@ -110,18 +125,74 @@ def main(argv: list[str] | None = None) -> None:
         print(f"\nWeCom pushed: {pushed}")
         return
 
+    if args.command == "evaluate":
+        until = _parse_until_argument(args.until, settings)
+        result = PredictionEvaluationJob(storage.predictions, storage.prediction_labels).run(
+            until=until,
+            limit=args.limit,
+        )
+        print(f"evaluated_at: {result.evaluated_at.isoformat(timespec='seconds')}")
+        print(f"scanned: {result.scanned}")
+        print(f"labeled: {result.labeled}")
+        print(f"skipped_not_due: {result.skipped_not_due}")
+        print(f"skipped_missing_samples: {result.skipped_missing_samples}")
+        print(f"remaining_unlabeled: {result.remaining_unlabeled}")
+        return
+
     if args.command == "init-db":
         print(f"SQLite initialized: {settings.db_path}")
         return
 
 
+def _parse_until_argument(value: str | None, settings: Settings) -> datetime:
+    if value is None:
+        return datetime.now(settings.tz)
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=settings.tz)
+    return parsed.astimezone(settings.tz)
+
+
 def configure_logging(settings: Settings) -> None:
     Path("logs").mkdir(parents=True, exist_ok=True)
+    Path("logs").chmod(0o700)
+    log_path = Path("logs/futures_signal.log")
+    log_path.touch(exist_ok=True)
+    log_path.chmod(0o600)
     logging.basicConfig(
         level=getattr(logging, settings.log_level, logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler("logs/futures_signal.log", encoding="utf-8"),
+            logging.FileHandler(log_path, encoding="utf-8"),
         ],
     )
+    redaction_filter = _SensitiveDataFilter()
+    for handler in logging.getLogger().handlers:
+        handler.addFilter(redaction_filter)
+
+
+class _SensitiveDataFilter(logging.Filter):
+    SENSITIVE_QUERY_KEYS = {"key", "token", "api_key", "authorization"}
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = self._redact(record.msg)
+        if record.args:
+            record.args = tuple(self._redact(value) if isinstance(value, str) else value for value in record.args)
+        return True
+
+    def _redact(self, value: str) -> str:
+        if "http://" not in value and "https://" not in value:
+            return value
+        parts = urlsplit(value)
+        if not parts.query:
+            return value
+        redacted_query = urlencode(
+            [
+                (key, "***" if key.lower() in self.SENSITIVE_QUERY_KEYS else item)
+                for key, item in parse_qsl(parts.query, keep_blank_values=True)
+            ],
+            safe="*",
+        )
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, redacted_query, parts.fragment))
