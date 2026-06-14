@@ -29,6 +29,16 @@ sudo usermod -aG docker "$USER"
 在本机项目目录执行，替换服务器信息：
 
 ```bash
+./scripts/package_source.sh
+scp futures-signal-src.tar.gz root@YOUR_ECS_PUBLIC_IP:/opt/
+ssh root@YOUR_ECS_PUBLIC_IP
+mkdir -p /opt/futures-signal
+tar -xzf /opt/futures-signal-src.tar.gz -C /opt/futures-signal
+```
+
+也可以直接用 `rsync`：
+
+```bash
 rsync -av --delete \
   --exclude .git \
   --exclude .venv \
@@ -37,6 +47,8 @@ rsync -av --delete \
   --exclude logs \
   ./ root@YOUR_ECS_PUBLIC_IP:/opt/futures-signal/
 ```
+
+不要上传本机 `.env`、`data/market.db` 和日志文件；VPS 上重新复制 `.env.example` 后填写密钥。
 
 ## 3. 配置环境变量
 

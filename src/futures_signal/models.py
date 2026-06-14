@@ -11,6 +11,7 @@ class ProductConfig:
     future_name: str
     spot_code: str
     spot_name: str
+    lead_beta: float = 1.0
 
 
 PRODUCT_CONFIGS: dict[str, ProductConfig] = {
@@ -68,6 +69,9 @@ class PositionRankSignal:
     net_short_top20: int | None
     net_short_change_top20: int | None
     citic_net_short_change: int | None = None
+    as_of_date: str | None = None
+    lag_days: int | None = None
+    is_fallback: bool = False
 
 
 @dataclass(frozen=True)
@@ -87,6 +91,9 @@ class MarketSnapshot:
     positions: dict[str, PositionRankSignal] = field(default_factory=dict)
     position_trends: dict[str, PositionTrendSignal] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    fetched_at: datetime | None = None
+    source: str = "unknown"
+    valid_for_scoring: bool = True
 
 
 @dataclass(frozen=True)
@@ -127,18 +134,29 @@ class ProductSignal:
     basis_zscore: float | None
     basis_history_count: int
     futures_minus_spot_pct: float
+    lead_beta: float
+    futures_return_5m_pct: float | None
+    spot_return_5m_pct: float | None
+    lead_residual_5m_pct: float | None
     volume: int
     volume_change: int | None
+    volume_change_ratio: float | None
     open_interest: int
     open_interest_change: int | None
     price_change_5m: float | None
     price_oi_signal: str
     main_contract_changed: bool
     daily_price_change: float | None = None
+    open_interest_change_ratio: float | None = None
     daily_open_interest_change: int | None = None
+    daily_open_interest_change_ratio: float | None = None
     daily_basis_change_bp: float | None = None
     net_short_change_top20: int | None = None
+    net_short_change_top20_ratio: float | None = None
     citic_net_short_change: int | None = None
+    citic_net_short_change_ratio: float | None = None
+    position_rank_lag_days: int | None = None
+    position_rank_is_fallback: bool = False
 
 
 @dataclass(frozen=True)
@@ -155,3 +173,6 @@ class MarketAnalysis:
     alert_kind: str | None
     term_summary: dict[str, str] = field(default_factory=dict)
     position_trends: dict[str, PositionTrendSignal] = field(default_factory=dict)
+    fetched_at: datetime | None = None
+    source: str = "unknown"
+    valid_for_scoring: bool = True

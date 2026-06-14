@@ -17,6 +17,7 @@ def format_analysis(
     sections = [
         [
             f"{_lamp_icon(lamp)} {lamp}：A股{_direction_label(analysis.score)}",
+            f"周期：{_horizon_label(analysis.timestamp)} | 置信度：{_confidence_label(analysis.score)}",
         ],
         [
             focus,
@@ -80,6 +81,15 @@ def _trading_hint(score: int) -> str:
     return "T+1 优先降风险，控制回撤"
 
 
+def _horizon_label(now) -> str:
+    current = now.time()
+    if (current.hour == 14 and current.minute >= 30) or current.hour >= 15:
+        return "次日开盘/次日全天"
+    if current.hour < 10:
+        return "盘中30分钟"
+    return "盘中至收盘"
+
+
 def _lamp_label(analysis: MarketAnalysis) -> str:
     signals = analysis.signals
     im = signals.get("IM")
@@ -126,28 +136,28 @@ def _focus_line(analysis: MarketAnalysis) -> str:
     signals = analysis.signals
     im = signals.get("IM")
     if im and (_net_short_expanding(im) or _citic_net_short_expanding(im) or _style_decision(im) == "bearish"):
-        return "结论：中证1000/小盘成长承压，权重相对抗跌"
+        return "结论：少碰中证1000/高弹性小票，优先看沪深300/上证50"
     if _is_weight_support_small_cap_weak(signals):
-        return "结论：不是全面看空，风险集中在中证1000/小盘成长"
+        return "结论：小票风险高于权重，少开中证1000方向新仓"
     if _is_small_cap_hot_weight_weak(signals):
-        return "结论：中证1000/中盘成长强于权重，指数持续性打折"
+        return "结论：中小盘短线更活跃，但指数不稳，盈利票别恋战"
     if analysis.score >= 70:
-        return "结论：多头结构占优，回踩优先看承接"
+        return "结论：可以做多，优先买回踩不破位的强势股"
     if analysis.score <= 39:
-        return "结论：空方压力占优，先控回撤"
-    return "结论：结构分化，仓位不宜激进"
+        return "结论：先防守，少开新仓，持仓冲高先减"
+    return "结论：方向不够明确，轻仓做，别追高"
 
 
 def _action_line(analysis: MarketAnalysis) -> str:
     signals = analysis.signals
     im = signals.get("IM")
     if im and (_net_short_expanding(im) or _style_decision(im) == "bearish"):
-        return "操作：不追中证1000/高弹性小票，尾盘只做强承接低吸"
+        return "操作：尾盘不追高；只低吸缩量回踩、承接强的票"
     if analysis.score >= 70:
-        return "操作：可偏进攻，优先IF/IH和趋势回踩"
+        return "操作：仓位可加一点，买点放在回踩确认后"
     if analysis.score <= 39:
-        return "操作：防守优先，冲高减仓或对冲"
-    return "操作：轻仓观察，只做确定性强的低吸"
+        return "操作：反弹先卖弱票，避免尾盘新开仓"
+    return "操作：只做低吸，不追涨；弱票先处理"
 
 
 def _compact_evidence(analysis: MarketAnalysis) -> str:
@@ -156,6 +166,16 @@ def _compact_evidence(analysis: MarketAnalysis) -> str:
     net_short_up = [signal.product for signal in signals.values() if _net_short_expanding(signal)]
     net_short_down = [signal.product for signal in signals.values() if _net_short_contracting(signal)]
     citic_up = [signal.product for signal in signals.values() if _citic_net_short_expanding(signal)]
+    lead_up = [signal.product for signal in signals.values() if _lead_residual_positive(signal)]
+    lead_down = [signal.product for signal in signals.values() if _lead_residual_negative(signal)]
+    if lead_up:
+        items.append(f"{','.join(lead_up)}期货领先偏多")
+    if lead_down:
+        items.append(f"{','.join(lead_down)}期货领先偏空")
+    if _is_weight_support_small_cap_weak(signals):
+        items.append("IF/IH强于IC/IM")
+    elif _is_small_cap_hot_weight_weak(signals):
+        items.append("IC/IM强于IF/IH")
     if net_short_up:
         items.append(f"{','.join(net_short_up)}净空扩大")
     if net_short_down:
@@ -164,14 +184,20 @@ def _compact_evidence(analysis: MarketAnalysis) -> str:
         items.append(f"中信{','.join(citic_up)}偏空")
     traps = _trap_lines(analysis)
     if traps:
-        items.append(traps[0].replace("，不作为看多依据", ""))
-    if _is_weight_support_small_cap_weak(signals):
-        items.append("IF/IH强于IC/IM")
-    elif _is_small_cap_hot_weight_weak(signals):
-        items.append("IC/IM强于IF/IH")
+        items.append(_shorten_trap_line(traps[0]))
     if not items:
         items.extend(_clean_reason(reason) for reason in analysis.reasons[:2])
-    return "；".join(items[:4])
+    return "；".join(items[:5])
+
+
+def _shorten_trap_line(line: str) -> str:
+    if "增仓伴随期现或基差走弱" in line:
+        products = line.split(" ", 1)[0]
+        return f"{products}期货增仓走弱"
+    if "上涨减仓" in line:
+        products = line.split(" ", 1)[0]
+        return f"{products}上涨减仓，不追"
+    return line.replace("，不作为看多依据", "")
 
 
 def _position_trend_line(analysis: MarketAnalysis) -> str:
@@ -189,12 +215,17 @@ def _position_trend_line(analysis: MarketAnalysis) -> str:
     return "持仓趋势：近几日净空变化不极端，T+1看盘中确认"
 
 
-def _compact_ai(ai_commentary: str) -> str:
+def _compact_ai(ai_commentary: str, max_lines: int = 5, max_chars: int = 360) -> str:
     lines = [line.strip() for line in ai_commentary.splitlines() if line.strip()]
     if not lines:
         return ""
-    first = lines[0]
-    return first if first.startswith("AI") else f"AI：{first}"
+    lines = lines[:max_lines]
+    if not lines[0].startswith("AI"):
+        lines[0] = f"AI：{lines[0]}"
+    text = "\n".join(lines)
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip() + "..."
+    return text
 
 
 def _clean_reason(reason: str) -> str:
@@ -384,15 +415,29 @@ def _is_suspicious_long(signal: ProductSignal) -> bool:
     return intraday_bad or daily_bad
 
 
+def _lead_residual_positive(signal: ProductSignal) -> bool:
+    return signal.lead_residual_5m_pct is not None and signal.lead_residual_5m_pct > 0
+
+
+def _lead_residual_negative(signal: ProductSignal) -> bool:
+    return signal.lead_residual_5m_pct is not None and signal.lead_residual_5m_pct < 0
+
+
 def _net_short_expanding(signal: ProductSignal) -> bool:
+    if signal.net_short_change_top20_ratio is not None:
+        return signal.net_short_change_top20_ratio >= 0.05
     return signal.net_short_change_top20 is not None and signal.net_short_change_top20 >= 1000
 
 
 def _net_short_contracting(signal: ProductSignal) -> bool:
+    if signal.net_short_change_top20_ratio is not None:
+        return signal.net_short_change_top20_ratio <= -0.05
     return signal.net_short_change_top20 is not None and signal.net_short_change_top20 <= -1000
 
 
 def _citic_net_short_expanding(signal: ProductSignal) -> bool:
+    if signal.citic_net_short_change_ratio is not None:
+        return signal.citic_net_short_change_ratio >= 0.025
     return signal.citic_net_short_change is not None and signal.citic_net_short_change >= 500
 
 

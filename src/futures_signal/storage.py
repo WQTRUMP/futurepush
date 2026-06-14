@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
 from .models import HistoricalProductSnapshot, MarketAnalysis, ProductSignal
+
+MORNING_PREDICTION_CUTOFF = time(10, 0)
+TAIL_PREDICTION_START = time(14, 30)
+PREDICTION_DAY_END = time(15, 5)
 
 
 class Storage:
@@ -21,6 +25,8 @@ class Storage:
                 create table if not exists snapshots (
                     id integer primary key autoincrement,
                     ts text not null,
+                    fetched_at text,
+                    market_ts text,
                     product text not null,
                     contract text not null,
                     futures_price real not null,
@@ -31,6 +37,9 @@ class Storage:
                     basis_bp real not null,
                     volume integer not null,
                     open_interest integer not null,
+                    is_stale integer default 0,
+                    source text default 'unknown',
+                    valid_for_scoring integer default 1,
                     raw_json text not null
                 );
                 create index if not exists idx_snapshots_product_ts on snapshots(product, ts);
@@ -61,8 +70,47 @@ class Storage:
                     old_contract text,
                     new_contract text not null
                 );
+
+                create table if not exists predictions (
+                    id integer primary key autoincrement,
+                    ts text not null,
+                    horizon text not null,
+                    score integer not null,
+                    band text not null,
+                    payload_json text not null
+                );
+                create index if not exists idx_predictions_ts on predictions(ts);
+
+                create table if not exists prediction_labels (
+                    prediction_id integer not null,
+                    target text not null,
+                    future_return_bp real not null,
+                    direction_hit integer not null,
+                    labeled_at text not null,
+                    primary key (prediction_id, target)
+                );
                 """
             )
+            self._ensure_snapshot_columns(conn)
+            conn.execute(
+                """
+                create index if not exists idx_snapshots_product_valid_ts
+                on snapshots(product, valid_for_scoring, ts)
+                """
+            )
+
+    def _ensure_snapshot_columns(self, conn: sqlite3.Connection) -> None:
+        existing = {row["name"] for row in conn.execute("pragma table_info(snapshots)").fetchall()}
+        migrations = {
+            "fetched_at": "alter table snapshots add column fetched_at text",
+            "market_ts": "alter table snapshots add column market_ts text",
+            "is_stale": "alter table snapshots add column is_stale integer default 0",
+            "source": "alter table snapshots add column source text default 'unknown'",
+            "valid_for_scoring": "alter table snapshots add column valid_for_scoring integer default 1",
+        }
+        for column, statement in migrations.items():
+            if column not in existing:
+                conn.execute(statement)
 
     def get_reference_snapshot(
         self,
@@ -79,6 +127,9 @@ class Storage:
                 select ts, product, contract, futures_price, spot_price, basis_bp, volume, open_interest
                 from snapshots
                 where product = ? and ts <= ? and ts >= ?
+                  and coalesce(valid_for_scoring, 1) = 1
+                  and (substr(ts, 12, 8) between '09:30:00' and '11:30:59'
+                       or substr(ts, 12, 8) between '13:00:00' and '15:00:59')
                 order by ts desc
                 limit 1
                 """,
@@ -101,16 +152,22 @@ class Storage:
         day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         oldest = day_start - timedelta(days=14)
         with self._connect() as conn:
-            row = conn.execute(
-                """
-                select ts, product, contract, futures_price, spot_price, basis_bp, volume, open_interest
-                from snapshots
-                where product = ? and ts < ? and ts >= ?
-                order by ts desc
-                limit 1
-                """,
-                (product, _dt(day_start), _dt(oldest)),
-            ).fetchone()
+            row = self._reference_row(
+                conn,
+                product,
+                day_start,
+                oldest,
+                "and substr(ts, 12, 8) between '14:55:00' and '15:00:59'",
+            )
+            if row is None:
+                row = self._reference_row(
+                    conn,
+                    product,
+                    day_start,
+                    oldest,
+                    "and (substr(ts, 12, 8) between '09:30:00' and '11:30:59' "
+                    "or substr(ts, 12, 8) between '13:00:00' and '15:00:59')",
+                )
         if row is None:
             return None
         return HistoricalProductSnapshot(
@@ -124,6 +181,27 @@ class Storage:
             open_interest=row["open_interest"],
         )
 
+    def _reference_row(
+        self,
+        conn: sqlite3.Connection,
+        product: str,
+        before: datetime,
+        oldest: datetime,
+        time_filter: str,
+    ) -> sqlite3.Row | None:
+        return conn.execute(
+            f"""
+            select ts, product, contract, futures_price, spot_price, basis_bp, volume, open_interest
+            from snapshots
+            where product = ? and ts < ? and ts >= ?
+              and coalesce(valid_for_scoring, 1) = 1
+              {time_filter}
+            order by ts desc
+            limit 1
+            """,
+            (product, _dt(before), _dt(oldest)),
+        ).fetchone()
+
     def latest_contracts(self) -> dict[str, str]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -131,8 +209,10 @@ class Storage:
                 select product, contract
                 from snapshots s
                 where ts = (
-                    select max(ts) from snapshots where product = s.product
+                    select max(ts) from snapshots
+                    where product = s.product and coalesce(valid_for_scoring, 1) = 1
                 )
+                and coalesce(valid_for_scoring, 1) = 1
                 """
             ).fetchall()
         return {row["product"]: row["contract"] for row in rows}
@@ -152,9 +232,13 @@ class Storage:
                 select basis_bp
                 from snapshots
                 where product = ? and ts >= ? and ts < ?
+                  and coalesce(valid_for_scoring, 1) = 1
+                  and substr(ts, 12, 5) = ?
+                  and (substr(ts, 12, 8) between '09:30:00' and '11:30:59'
+                       or substr(ts, 12, 8) between '13:00:00' and '15:00:59')
                 order by ts asc
                 """,
-                (product, _dt(oldest), _dt(now)),
+                (product, _dt(oldest), _dt(now), now.strftime("%H:%M")),
             ).fetchall()
         return [float(row["basis_bp"]) for row in rows]
 
@@ -165,12 +249,14 @@ class Storage:
                 conn.execute(
                     """
                     insert into snapshots (
-                        ts, product, contract, futures_price, futures_change_pct,
+                        ts, fetched_at, market_ts, product, contract, futures_price, futures_change_pct,
                         spot_price, spot_change_pct, basis, basis_bp, volume,
-                        open_interest, raw_json
-                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        open_interest, is_stale, source, valid_for_scoring, raw_json
+                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        _dt(analysis.timestamp),
+                        _dt(analysis.fetched_at or analysis.timestamp),
                         _dt(analysis.timestamp),
                         signal.product,
                         signal.contract,
@@ -182,6 +268,9 @@ class Storage:
                         signal.basis_bp,
                         signal.volume,
                         signal.open_interest,
+                        0 if analysis.valid_for_scoring else 1,
+                        analysis.source,
+                        1 if analysis.valid_for_scoring else 0,
                         json.dumps(_signal_payload(signal), ensure_ascii=False),
                     ),
                 )
@@ -202,6 +291,101 @@ class Storage:
                 "insert into scores (ts, score, band, payload_json) values (?, ?, ?, ?)",
                 (_dt(analysis.timestamp), analysis.score, analysis.band, json.dumps(payload, ensure_ascii=False)),
             )
+            for horizon in _prediction_horizons(analysis.timestamp):
+                conn.execute(
+                    "insert into predictions (ts, horizon, score, band, payload_json) values (?, ?, ?, ?, ?)",
+                    (
+                        _dt(analysis.timestamp),
+                        horizon,
+                        analysis.score,
+                        analysis.band,
+                        json.dumps(payload, ensure_ascii=False),
+                    ),
+                )
+
+    def label_due_predictions(self, now: datetime) -> int:
+        labeled = 0
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                select p.id, p.ts, p.horizon, p.score, p.payload_json
+                from predictions p
+                where not exists (
+                    select 1 from prediction_labels l where l.prediction_id = p.id
+                )
+                order by p.ts asc
+                limit 500
+                """
+            ).fetchall()
+            for row in rows:
+                pred_ts = datetime.fromisoformat(row["ts"])
+                target = _target_time(pred_ts, row["horizon"])
+                if target is None or target > now:
+                    continue
+                payload = json.loads(row["payload_json"])
+                future_return = self._future_return_bp(conn, payload, target)
+                if future_return is None:
+                    continue
+                hit = _direction_hit(int(row["score"]), future_return)
+                conn.execute(
+                    """
+                    insert or ignore into prediction_labels (
+                        prediction_id, target, future_return_bp, direction_hit, labeled_at
+                    ) values (?, ?, ?, ?, ?)
+                    """,
+                    (row["id"], row["horizon"], future_return, 1 if hit else 0, _dt(now)),
+                )
+                labeled += 1
+        return labeled
+
+    def _future_return_bp(
+        self,
+        conn: sqlite3.Connection,
+        payload: dict[str, Any],
+        target: datetime,
+        window_minutes: int = 30,
+    ) -> float | None:
+        signals = payload.get("signals", {})
+        if not isinstance(signals, dict):
+            return None
+        returns = []
+        for product, signal in signals.items():
+            if not isinstance(signal, dict):
+                continue
+            start_price = signal.get("spot_price")
+            if not start_price:
+                continue
+            target_price = self._nearest_spot_price(conn, str(product), target, window_minutes)
+            if target_price is None:
+                continue
+            returns.append((float(target_price) / float(start_price) - 1) * 10000)
+        if not returns:
+            return None
+        return sum(returns) / len(returns)
+
+    def _nearest_spot_price(
+        self,
+        conn: sqlite3.Connection,
+        product: str,
+        target: datetime,
+        window_minutes: int,
+    ) -> float | None:
+        start = target - timedelta(minutes=window_minutes)
+        end = target + timedelta(minutes=window_minutes)
+        rows = conn.execute(
+            """
+            select ts, spot_price
+            from snapshots
+            where product = ? and ts >= ? and ts <= ?
+              and coalesce(valid_for_scoring, 1) = 1
+            order by ts asc
+            """,
+            (product, _dt(start), _dt(end)),
+        ).fetchall()
+        if not rows:
+            return None
+        nearest = min(rows, key=lambda row: abs((datetime.fromisoformat(row["ts"]) - target).total_seconds()))
+        return float(nearest["spot_price"])
 
     def has_recent_alert(self, kind: str, now: datetime, cooldown_seconds: int) -> bool:
         cutoff = now - timedelta(seconds=cooldown_seconds)
@@ -229,6 +413,54 @@ def _dt(value: datetime) -> str:
     return value.isoformat(timespec="seconds")
 
 
+def _prediction_horizons(now: datetime) -> list[str]:
+    current = now.time()
+    if current < MORNING_PREDICTION_CUTOFF:
+        return ["same_day_1030", "same_day_1130", "same_day_close"]
+    if current < TAIL_PREDICTION_START:
+        return ["same_day_1130", "same_day_close"]
+    if current <= PREDICTION_DAY_END:
+        return ["next_day_open", "next_day_1030", "next_day_close"]
+    return []
+
+
+def _target_time(pred_ts: datetime, horizon: str) -> datetime | None:
+    same_day_targets = {
+        "same_day_1030": (10, 30),
+        "same_day_1130": (11, 30),
+        "same_day_close": (15, 0),
+    }
+    if horizon in same_day_targets:
+        hour, minute = same_day_targets[horizon]
+        return pred_ts.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    next_day_targets = {
+        "next_day_open": (9, 30),
+        "next_day_1030": (10, 30),
+        "next_day_close": (15, 0),
+    }
+    if horizon not in next_day_targets:
+        return None
+    hour, minute = next_day_targets[horizon]
+    target_day = _next_weekday(pred_ts)
+    return target_day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def _next_weekday(value: datetime) -> datetime:
+    candidate = value + timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+    return candidate
+
+
+def _direction_hit(score: int, future_return_bp: float) -> bool:
+    if score >= 60:
+        return future_return_bp > 0
+    if score <= 39:
+        return future_return_bp < 0
+    return abs(future_return_bp) <= 20
+
+
 def _signal_payload(signal: ProductSignal) -> dict[str, Any]:
     return {
         "product": signal.product,
@@ -247,21 +479,38 @@ def _signal_payload(signal: ProductSignal) -> dict[str, Any]:
         "basis_zscore": signal.basis_zscore,
         "basis_history_count": signal.basis_history_count,
         "futures_minus_spot_pct": signal.futures_minus_spot_pct,
+        "lead_beta": signal.lead_beta,
+        "futures_return_5m_pct": signal.futures_return_5m_pct,
+        "spot_return_5m_pct": signal.spot_return_5m_pct,
+        "lead_residual_5m_pct": signal.lead_residual_5m_pct,
         "volume": signal.volume,
         "volume_change": signal.volume_change,
+        "volume_change_ratio": signal.volume_change_ratio,
         "open_interest": signal.open_interest,
         "open_interest_change": signal.open_interest_change,
+        "open_interest_change_ratio": signal.open_interest_change_ratio,
+        "price_change_5m": signal.price_change_5m,
         "price_oi_signal": signal.price_oi_signal,
         "main_contract_changed": signal.main_contract_changed,
         "daily_price_change": signal.daily_price_change,
         "daily_open_interest_change": signal.daily_open_interest_change,
+        "daily_open_interest_change_ratio": signal.daily_open_interest_change_ratio,
         "daily_basis_change_bp": signal.daily_basis_change_bp,
+        "net_short_change_top20": signal.net_short_change_top20,
+        "net_short_change_top20_ratio": signal.net_short_change_top20_ratio,
+        "citic_net_short_change": signal.citic_net_short_change,
+        "citic_net_short_change_ratio": signal.citic_net_short_change_ratio,
+        "position_rank_lag_days": signal.position_rank_lag_days,
+        "position_rank_is_fallback": signal.position_rank_is_fallback,
     }
 
 
 def _analysis_payload(analysis: MarketAnalysis) -> dict[str, Any]:
     return {
         "timestamp": _dt(analysis.timestamp),
+        "fetched_at": _dt(analysis.fetched_at or analysis.timestamp),
+        "source": analysis.source,
+        "valid_for_scoring": analysis.valid_for_scoring,
         "score": analysis.score,
         "band": analysis.band,
         "previous_score": analysis.previous_score,
@@ -272,4 +521,12 @@ def _analysis_payload(analysis: MarketAnalysis) -> dict[str, Any]:
         "warnings": analysis.warnings,
         "alert_kind": analysis.alert_kind,
         "term_summary": analysis.term_summary,
+        "position_trends": {
+            product: {
+                "days": trend.days,
+                "net_short_change_sum": trend.net_short_change_sum,
+                "latest_net_short_change": trend.latest_net_short_change,
+            }
+            for product, trend in analysis.position_trends.items()
+        },
     }

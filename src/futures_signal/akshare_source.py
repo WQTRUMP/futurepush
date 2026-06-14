@@ -36,6 +36,7 @@ class AkShareDataSource:
         self._last_terms: dict[str, list[TermQuote]] = {}
         self._last_position_date: str | None = None
         self._last_positions: dict[str, PositionRankSignal] = {}
+        self._last_position_empty_at: datetime | None = None
         self._last_position_trend_date: str | None = None
         self._last_position_trends: dict[str, PositionTrendSignal] = {}
 
@@ -65,6 +66,8 @@ class AkShareDataSource:
             positions=positions,
             position_trends=position_trends,
             warnings=warnings,
+            fetched_at=now,
+            source="akshare",
         )
 
     def _fetch_main_futures(self, now: datetime, warnings: list[str]) -> dict[str, FutureQuote]:
@@ -311,20 +314,46 @@ class AkShareDataSource:
         if not self.settings.fetch_position_rank:
             return {}
         date_text = now.strftime("%Y%m%d")
-        if self._last_position_date == date_text:
+        if self._last_position_date == date_text and self._last_positions:
             return self._last_positions
+        if self._last_position_empty_at is not None:
+            age = (now - self._last_position_empty_at).total_seconds()
+            if age < self.settings.position_rank_empty_retry_seconds:
+                if self._last_positions:
+                    warnings.append("今日持仓排名暂不可用，继续使用上一可用交易日排名")
+                    return self._last_positions
+                warnings.append("今日持仓排名暂不可用，等待下次重试")
+                return {}
 
-        positions: dict[str, PositionRankSignal] = {}
+        positions = self._fetch_positions_for_date(date_text, now, warnings)
+        if positions:
+            self._last_position_date = date_text
+            self._last_positions = positions
+            self._last_position_empty_at = None
+            return positions
+
+        self._last_position_empty_at = now
+        fallback = self._fetch_previous_available_positions(now, warnings)
+        if fallback:
+            self._last_positions = fallback
+            return fallback
+        return {}
+
+    def _fetch_positions_for_date(
+        self,
+        date_text: str,
+        now: datetime,
+        warnings: list[str],
+    ) -> dict[str, PositionRankSignal]:
         try:
             rank_sum = self._call_quiet(self.ak.get_rank_sum, date=date_text, vars_list=list(PRODUCTS))
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"中金所持仓汇总获取失败: {self._brief_error(exc)}")
-            self._last_position_date = date_text
-            self._last_positions = {}
             return {}
 
         citic_changes = self._fetch_citic_net_short_changes(date_text, warnings)
         rows = self._rows(rank_sum)
+        positions: dict[str, PositionRankSignal] = {}
         for product in PRODUCTS:
             product_rows = [row for row in rows if str(row.get("variety") or row.get("var") or "").upper() == product]
             if not product_rows:
@@ -338,11 +367,31 @@ class AkShareDataSource:
                 net_short_top20=short_total - long_total,
                 net_short_change_top20=short_change - long_change,
                 citic_net_short_change=citic_changes.get(product),
+                as_of_date=date_text,
+                lag_days=max(0, (now.date() - datetime.strptime(date_text, "%Y%m%d").date()).days),
+                is_fallback=date_text != now.strftime("%Y%m%d"),
             )
-
-        self._last_position_date = date_text
-        self._last_positions = positions
         return positions
+
+    def _fetch_previous_available_positions(
+        self,
+        now: datetime,
+        warnings: list[str],
+        max_lookback_days: int = 7,
+    ) -> dict[str, PositionRankSignal]:
+        for day_offset in range(1, max_lookback_days + 1):
+            candidate = now - timedelta(days=day_offset)
+            if candidate.weekday() >= 5:
+                continue
+            date_text = candidate.strftime("%Y%m%d")
+            fallback_warnings: list[str] = []
+            positions = self._fetch_positions_for_date(date_text, now, fallback_warnings)
+            if positions:
+                warnings.append(f"今日持仓排名暂不可用，已使用 {date_text} 排名")
+                self._last_position_date = date_text
+                return positions
+        warnings.append("今日及上一可用交易日持仓排名均不可用，本次持仓排名降为中性")
+        return {}
 
     def _fetch_citic_net_short_changes(self, date_text: str, warnings: list[str]) -> dict[str, int]:
         try:

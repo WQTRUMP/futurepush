@@ -22,6 +22,11 @@ def main(argv: list[str] | None = None) -> None:
 
     once_parser = subparsers.add_parser("once", help="抓取一次并打印当前评分")
     once_parser.add_argument("--push", action="store_true", help="同时按推送规则发送企业微信")
+    once_parser.add_argument(
+        "--save-outside-market",
+        action="store_true",
+        help="非交易时段也允许写入数据库，用于人工调试",
+    )
 
     subparsers.add_parser("test-wecom", help="发送企业微信测试消息")
     subparsers.add_parser("test-ai", help="用 DeepSeek 生成一次 AI 点评测试")
@@ -92,7 +97,15 @@ def main(argv: list[str] | None = None) -> None:
         source = AkShareDataSource(settings)
         messenger = WeComClient(settings.wecom_webhook_url) if args.push else None
         ai_client = AICommentaryClient(settings) if args.push else None
-        analysis, pushed = run_once(settings, storage, source, messenger, ai_client, push=args.push)
+        analysis, pushed = run_once(
+            settings,
+            storage,
+            source,
+            messenger,
+            ai_client,
+            push=args.push,
+            save_outside_market=args.save_outside_market,
+        )
         print(format_once_output(analysis))
         print(f"\nWeCom pushed: {pushed}")
         return

@@ -176,6 +176,51 @@ def test_fetch_positions_aggregates_rank_sum_and_citic_change(tmp_path, monkeypa
     assert warnings == []
 
 
+def test_fetch_positions_uses_previous_available_day_when_today_empty(tmp_path, monkeypatch):
+    source = AkShareDataSource(_settings(tmp_path))
+    calls = []
+
+    def fake_rank_sum(date, vars_list):
+        calls.append(date)
+        if date == "20260528":
+            return pd.DataFrame(
+                [
+                    {
+                        "symbol": "IM2606",
+                        "variety": "IM",
+                        "long_open_interest_top20": 10000,
+                        "long_open_interest_chg_top20": 200,
+                        "short_open_interest_top20": 13000,
+                        "short_open_interest_chg_top20": 1700,
+                    }
+                ]
+            )
+        return pd.DataFrame([])
+
+    def fake_cffex_rank_table(date, vars_list):
+        return {}
+
+    monkeypatch.setattr(source.ak, "get_rank_sum", fake_rank_sum)
+    monkeypatch.setattr(source.ak, "get_cffex_rank_table", fake_cffex_rank_table)
+
+    warnings: list[str] = []
+    positions = source._fetch_positions_if_due(datetime(2026, 5, 29, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")), warnings)
+
+    assert positions["IM"].net_short_change_top20 == 1500
+    assert positions["IM"].as_of_date == "20260528"
+    assert positions["IM"].lag_days == 1
+    assert positions["IM"].is_fallback is True
+    assert "20260529" in calls
+    assert "20260528" in calls
+    assert any("已使用 20260528 排名" in item for item in warnings)
+
+    calls.clear()
+    second = source._fetch_positions_if_due(datetime(2026, 5, 29, 10, 5, tzinfo=ZoneInfo("Asia/Shanghai")), [])
+
+    assert second["IM"].net_short_change_top20 == 1500
+    assert calls == []
+
+
 def test_fetch_position_trends_aggregates_recent_days(tmp_path, monkeypatch):
     source = AkShareDataSource(_settings(tmp_path))
 

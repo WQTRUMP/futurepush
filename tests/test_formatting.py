@@ -35,8 +35,13 @@ def _signal(
         basis_zscore=None,
         basis_history_count=12,
         futures_minus_spot_pct=futures_minus_spot_pct,
+        lead_beta=1.0,
+        futures_return_5m_pct=0.3 if price_change_5m >= 0 else -0.3,
+        spot_return_5m_pct=0.1,
+        lead_residual_5m_pct=0.2 if futures_minus_spot_pct >= 0 else -0.2,
         volume=10000,
         volume_change=120,
+        volume_change_ratio=0.012,
         open_interest=20000,
         open_interest_change=open_interest_change,
         price_change_5m=price_change_5m,
@@ -81,9 +86,9 @@ def test_format_analysis_uses_conclusion_first_mobile_format():
     assert text.startswith("🟧 黄灯偏橙：A股震荡")
     assert "\n----\n结论：" in text
     assert "\n----\n依据：" in text
-    assert "结论：中证1000/小盘成长承压，权重相对抗跌" in text
-    assert "操作：不追中证1000/高弹性小票，尾盘只做强承接低吸" in text
-    assert "依据：IM净空扩大；中信IM偏空；IC,IM 增仓伴随期现或基差走弱" in text
+    assert "结论：少碰中证1000/高弹性小票，优先看沪深300/上证50" in text
+    assert "操作：尾盘不追高；只低吸缩量回踩、承接强的票" in text
+    assert "依据：IF,IH期货领先偏多；IC,IM期货领先偏空；IF/IH强于IC/IM；IM净空扩大；中信IM偏空" in text
     assert "IF/IH强于IC/IM" in text
     assert "小盘题材" not in text
     assert "题材强于权重" not in text
@@ -122,3 +127,25 @@ def test_format_analysis_adds_position_trend_only_when_requested():
 
     assert "\n----\n持仓趋势：" in text
     assert "持仓趋势：IM净空累增，IF净空收敛" in text
+
+
+def test_format_analysis_keeps_multiple_ai_lines():
+    analysis = MarketAnalysis(
+        timestamp=datetime(2026, 5, 28, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+        score=55,
+        band="中性震荡",
+        previous_score=None,
+        previous_band=None,
+        components={},
+        signals={},
+        reasons=["测试"],
+        warnings=[],
+        alert_kind="sample",
+    )
+
+    text = format_analysis(
+        analysis,
+        ai_commentary="走势：震荡偏强\n节奏：等回踩\n板块：权重优先\n风险：冲高回落",
+    )
+
+    assert "AI：走势：震荡偏强\n节奏：等回踩\n板块：权重优先\n风险：冲高回落" in text

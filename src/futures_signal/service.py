@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import replace
 from datetime import datetime
 
 from .ai_commentary import AICommentaryClient, AICommentaryError
@@ -10,9 +11,10 @@ from .config import Settings
 from .data_sources import MarketDataSource
 from .formatting import format_analysis
 from .market_calendar import TradingCalendar
-from .models import MarketAnalysis
+from .models import MarketAnalysis, MarketSnapshot
 from .scoring import analyze_market
 from .storage import Storage
+from .validation import QuoteValidator
 from .wecom import WeComClient
 
 logger = logging.getLogger(__name__)
@@ -25,8 +27,16 @@ def run_once(
     messenger: WeComClient | None = None,
     ai_client: AICommentaryClient | None = None,
     push: bool = True,
+    save_outside_market: bool = False,
+    calendar: TradingCalendar | None = None,
 ) -> tuple[MarketAnalysis, bool]:
     snapshot = source.fetch()
+    calendar = calendar or TradingCalendar(
+        settings.tz,
+        use_akshare=settings.use_trade_calendar,
+        cache_path=settings.trade_calendar_cache_path,
+    )
+    snapshot, should_persist = _prepare_snapshot(settings, snapshot, calendar, save_outside_market)
     references = {
         product: storage.get_reference_snapshot(product, snapshot.timestamp)
         for product in ("IF", "IH", "IC", "IM")
@@ -52,10 +62,12 @@ def run_once(
         dividend_season_adjust=settings.dividend_season_adjust,
         roll_window_days=settings.roll_window_days,
     )
-    storage.save_analysis(analysis)
+    if should_persist:
+        storage.save_analysis(analysis)
+        storage.label_due_predictions(analysis.timestamp)
 
     kind = _alert_kind(settings, analysis)
-    should_push = push and kind is not None and not storage.has_recent_alert(
+    should_push = should_persist and push and kind is not None and not storage.has_recent_alert(
         kind,
         analysis.timestamp,
         _alert_cooldown_seconds(settings, kind),
@@ -98,7 +110,15 @@ def run_forever(settings: Settings) -> None:
         now = datetime.now(settings.tz)
         if settings.run_outside_market_hours or calendar.is_market_open(now):
             try:
-                analysis, pushed = run_once(settings, storage, source, messenger, ai_client, push=True)
+                analysis, pushed = run_once(
+                    settings,
+                    storage,
+                    source,
+                    messenger,
+                    ai_client,
+                    push=True,
+                    calendar=calendar,
+                )
                 logger.info("sample score=%s band=%s pushed=%s", analysis.score, analysis.band, pushed)
             except Exception:
                 logger.exception("sampling failed")
@@ -120,6 +140,34 @@ def run_forever(settings: Settings) -> None:
 def setup_runtime_dirs(settings: Settings) -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _prepare_snapshot(
+    settings: Settings,
+    snapshot: MarketSnapshot,
+    calendar: TradingCalendar,
+    save_outside_market: bool,
+) -> tuple[MarketSnapshot, bool]:
+    fetched_at = snapshot.fetched_at or snapshot.timestamp
+    outside_market = not settings.run_outside_market_hours and not calendar.is_market_open(fetched_at)
+    if outside_market and not save_outside_market:
+        warning = "非交易时段样本仅展示，未入库也不会推送"
+        return (
+            replace(
+                snapshot,
+                fetched_at=fetched_at,
+                warnings=[*snapshot.warnings, warning],
+                valid_for_scoring=False,
+            ),
+            False,
+        )
+
+    validator = QuoteValidator(
+        settings.tz,
+        max_quote_age_seconds=settings.max_quote_age_seconds,
+        max_tick_sync_seconds=settings.max_tick_sync_seconds,
+    )
+    return validator.validate(snapshot), True
 
 
 def _should_push(settings: Settings, storage: Storage, analysis: MarketAnalysis) -> bool:

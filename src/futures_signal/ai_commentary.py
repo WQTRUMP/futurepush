@@ -113,8 +113,9 @@ def _analysis_for_prompt(analysis: MarketAnalysis) -> dict[str, object]:
         "warnings": analysis.warnings[:3],
         "term_summary": analysis.term_summary,
         "basis_definition": "期-现基差=期货价格-现货指数；负值为贴水，正值为升水；Δ5m>0表示贴水收窄或升水扩大。",
+        "lead_residual_definition": "lead_residual_5m_pct=期货5分钟收益率 - beta * 现货5分钟收益率；>0表示期货端领先定价更乐观，<0表示期货端领先压低预期。",
         "daily_signal_definition": "daily_* 字段表示当前样本相对上一交易日最后可用快照的日线级别变化，用于T+1判断；5m字段只作短线确认。",
-        "position_rank_definition": "net_short_change_top20=前20会员空单变化-多单变化；>0表示净空扩大，<0表示净空收敛。citic_net_short_change为中信期货同口径边际净空变化。",
+        "position_rank_definition": "net_short_change_top20=前20会员空单变化-多单变化；>0表示净空扩大，<0表示净空收敛。*_ratio字段为变化量/当前持仓量。position_rank_is_fallback=true表示使用上一可用交易日排名。",
         "sector_mapping": {
             "IH": "大金融、银行、保险、券商、央国企红利",
             "IF": "沪深300权重、核心资产、消费和新能源龙头",
@@ -147,13 +148,36 @@ def _signal_for_prompt(signal: ProductSignal) -> dict[str, object]:
         "basis_change_5m_bp": None if signal.basis_change_bp is None else round(signal.basis_change_bp, 2),
         "basis_percentile": None if signal.basis_percentile is None else round(signal.basis_percentile, 3),
         "futures_minus_spot_pct": round(signal.futures_minus_spot_pct, 3),
+        "lead_beta": signal.lead_beta,
+        "futures_return_5m_pct": None
+        if signal.futures_return_5m_pct is None
+        else round(signal.futures_return_5m_pct, 4),
+        "spot_return_5m_pct": None if signal.spot_return_5m_pct is None else round(signal.spot_return_5m_pct, 4),
+        "lead_residual_5m_pct": None
+        if signal.lead_residual_5m_pct is None
+        else round(signal.lead_residual_5m_pct, 4),
         "open_interest_change": signal.open_interest_change,
+        "open_interest_change_ratio": None
+        if signal.open_interest_change_ratio is None
+        else round(signal.open_interest_change_ratio, 5),
         "volume_change": signal.volume_change,
+        "volume_change_ratio": None if signal.volume_change_ratio is None else round(signal.volume_change_ratio, 5),
         "daily_price_change": None if signal.daily_price_change is None else round(signal.daily_price_change, 2),
         "daily_open_interest_change": signal.daily_open_interest_change,
+        "daily_open_interest_change_ratio": None
+        if signal.daily_open_interest_change_ratio is None
+        else round(signal.daily_open_interest_change_ratio, 5),
         "daily_basis_change_bp": None if signal.daily_basis_change_bp is None else round(signal.daily_basis_change_bp, 2),
         "net_short_change_top20": signal.net_short_change_top20,
+        "net_short_change_top20_ratio": None
+        if signal.net_short_change_top20_ratio is None
+        else round(signal.net_short_change_top20_ratio, 5),
         "citic_net_short_change": signal.citic_net_short_change,
+        "citic_net_short_change_ratio": None
+        if signal.citic_net_short_change_ratio is None
+        else round(signal.citic_net_short_change_ratio, 5),
+        "position_rank_lag_days": signal.position_rank_lag_days,
+        "position_rank_is_fallback": signal.position_rank_is_fallback,
         "price_oi_signal": signal.price_oi_signal,
     }
 

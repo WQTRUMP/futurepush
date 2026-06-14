@@ -69,6 +69,9 @@ class Settings:
     daily_push_window_seconds: int = 600
     daily_alert_cooldown_seconds: int = 82800
     urgent_alert_cooldown_seconds: int = 3600
+    max_quote_age_seconds: int = 180
+    max_tick_sync_seconds: int = 60
+    position_rank_empty_retry_seconds: int = 900
 
     @property
     def tz(self) -> ZoneInfo:
@@ -89,6 +92,9 @@ class Settings:
             daily_push_window_seconds=_int_env("DAILY_PUSH_WINDOW_SECONDS", 600),
             daily_alert_cooldown_seconds=_int_env("DAILY_ALERT_COOLDOWN_SECONDS", 82800),
             urgent_alert_cooldown_seconds=_int_env("URGENT_ALERT_COOLDOWN_SECONDS", 3600),
+            max_quote_age_seconds=_int_env("MAX_QUOTE_AGE_SECONDS", 180),
+            max_tick_sync_seconds=_int_env("MAX_TICK_SYNC_SECONDS", 60),
+            position_rank_empty_retry_seconds=_int_env("POSITION_RANK_EMPTY_RETRY_SECONDS", 900),
             run_outside_market_hours=_bool_env("RUN_OUTSIDE_MARKET_HOURS", False),
             use_trade_calendar=_bool_env("USE_TRADE_CALENDAR", True),
             trade_calendar_cache_path=Path(os.getenv("TRADE_CALENDAR_CACHE_PATH", str(data_dir / "trade_dates.json"))),
