@@ -130,3 +130,26 @@ def test_evaluation_job_respects_limit_and_due_cutoff(tmp_path: Path):
     assert result.labeled == 1
     assert result.skipped_not_due == 0
     assert result.remaining_unlabeled == 1
+
+
+def test_evaluation_job_skips_predictions_that_are_not_due_yet(tmp_path: Path):
+    storage = Storage(tmp_path / "market.db")
+    storage.init()
+
+    with storage._connect() as conn:
+        conn.execute(
+            """
+            insert into predictions (ts, horizon, score, band, payload_json)
+            values (?, ?, ?, ?, ?)
+            """,
+            ("2026-06-02T14:40:00+08:00", "next_day_open", 65, "偏多", '{"signals":{"IF":{"spot_price":4010}}}'),
+        )
+
+    result = PredictionEvaluationJob(storage.predictions, storage.prediction_labels).run(
+        datetime(2026, 6, 2, 14, 50, tzinfo=TZ)
+    )
+
+    assert result.scanned == 1
+    assert result.labeled == 0
+    assert result.skipped_not_due == 1
+    assert result.remaining_unlabeled == 1

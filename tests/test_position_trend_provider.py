@@ -106,3 +106,34 @@ def test_fetch_covers_disabled_and_failure_paths(tmp_path, monkeypatch):
     assert trends == {}
     assert observation.status == "failed"
     assert any("近期期货持仓趋势获取失败" in item for item in warnings)
+
+
+def test_fetch_ignores_unknown_products_and_rows_without_dates(tmp_path, monkeypatch):
+    provider = _provider(tmp_path)
+
+    monkeypatch.setattr(
+        provider.ak,
+        "get_rank_sum_daily",
+        lambda start_day, end_day, vars_list: pd.DataFrame(
+            [
+                {
+                    "date": "",
+                    "symbol": "IM2606",
+                    "variety": "IM",
+                    "long_open_interest_chg_top20": 100,
+                    "short_open_interest_chg_top20": 600,
+                },
+                {
+                    "date": "20260529",
+                    "symbol": "XX2606",
+                    "variety": "XX",
+                    "long_open_interest_chg_top20": 1,
+                    "short_open_interest_chg_top20": 2,
+                },
+            ]
+        ),
+    )
+
+    trends, observation = provider.fetch(datetime(2026, 5, 29, 16, 45, tzinfo=ZoneInfo("Asia/Shanghai")), [])
+    assert trends == {}
+    assert observation.status == "ok"

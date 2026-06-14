@@ -207,3 +207,56 @@ def test_fetch_covers_disabled_and_failure_paths(tmp_path, monkeypatch):
     assert positions == {}
     assert observation.status == "degraded"
     assert any("中金所持仓汇总获取失败" in item for item in warnings)
+
+
+def test_fetch_hits_cache_and_cooldown_without_previous_positions(tmp_path):
+    provider = _provider(tmp_path)
+    now = datetime(2026, 5, 29, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    provider._last_position_date = "20260529"
+    provider._last_positions = {"IF": object()}
+    reused, observation = provider.fetch(now, [])
+    assert reused == provider._last_positions
+    assert observation.status == "ok"
+    assert observation.details["cache_hit"] is True
+
+    provider._last_position_date = None
+    provider._last_positions = {}
+    provider._last_position_empty_at = now
+    warnings: list[str] = []
+    reused, observation = provider.fetch(now + timedelta(seconds=30), warnings)
+    assert reused == {}
+    assert observation.status == "degraded"
+    assert observation.details["cooldown_active"] is True
+    assert warnings == ["今日持仓排名暂不可用，等待下次重试"]
+
+
+def test_position_rank_provider_citic_helper_handles_errors_non_dict_and_unknown_contracts(tmp_path, monkeypatch):
+    provider = _provider(tmp_path)
+    warnings: list[str] = []
+
+    monkeypatch.setattr(provider.ak, "get_cffex_rank_table", lambda date, vars_list: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert provider._fetch_citic_net_short_changes("20260529", warnings) == {}
+    assert any("中信期货席位持仓获取失败" in item for item in warnings)
+
+    warnings.clear()
+    monkeypatch.setattr(provider.ak, "get_cffex_rank_table", lambda date, vars_list: [])
+    assert provider._fetch_citic_net_short_changes("20260529", warnings) == {}
+
+    monkeypatch.setattr(
+        provider.ak,
+        "get_cffex_rank_table",
+        lambda date, vars_list: {
+            "XX2606": pd.DataFrame(
+                [
+                    {
+                        "long_party_name": "中信期货",
+                        "long_open_interest_chg": 10,
+                        "short_party_name": "中信期货",
+                        "short_open_interest_chg": 15,
+                    }
+                ]
+            )
+        },
+    )
+    assert provider._fetch_citic_net_short_changes("20260529", warnings) == {}

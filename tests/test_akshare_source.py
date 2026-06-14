@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import pytest
 
-from futures_signal.akshare_source import AkShareDataSource
+from futures_signal.akshare_source import AkShareDataSource, build_akshare_data_source
 from futures_signal.config import Settings
 from futures_signal.data_sources import DataSourceError
 
@@ -148,3 +148,69 @@ def test_fetch_position_proxy_methods_delegate_to_split_providers(tmp_path, monk
     assert positions["IM"].net_short_change_top20 == 1500
     assert trends["IM"].latest_net_short_change == 200
     assert warnings == []
+
+
+def test_wrapper_delegates_attributes_methods_and_property_access(tmp_path, monkeypatch):
+    source = AkShareDataSource(_settings(tmp_path))
+
+    source.settings = source.settings
+    source._impl = source._impl
+
+    source._last_position_date = "20260602"
+    source._last_positions = {"IF": "rank"}
+    source._last_position_empty_at = datetime(2026, 6, 2, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    source._last_position_trend_date = "20260602"
+    source._last_position_trends = {"IF": "trend"}
+
+    assert source._last_position_date == "20260602"
+    assert source._last_positions == {"IF": "rank"}
+    assert source._last_position_trend_date == "20260602"
+    assert source._last_position_trends == {"IF": "trend"}
+
+    marker = object()
+    source.ak = marker
+    source.quote_bundle_provider = marker
+    source.calendar = marker
+    source._last_term_fetch_at = marker
+    source._last_terms = {"IF": []}
+    assert source.ak is marker
+    assert source.quote_bundle_provider is marker
+    assert source.calendar is marker
+    assert source._last_term_fetch_at is marker
+    assert source._last_terms == {"IF": []}
+
+    source.extra_value = "local"
+    assert source.extra_value == "local"
+
+    monkeypatch.setattr(source._impl, "fetch", lambda: "snapshot")
+    assert source.fetch() == "snapshot"
+    assert source.last_fetch_observation == source._impl.last_fetch_observation
+
+
+def test_wrapper_proxy_helpers_and_builder_cover_delegated_paths(tmp_path, monkeypatch):
+    source = AkShareDataSource(_settings(tmp_path))
+    now = datetime(2026, 5, 29, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    warnings: list[str] = []
+
+    monkeypatch.setattr(source._impl.position_rank_provider, "_fetch_positions_for_date", lambda date_text, current, current_warnings: {"date": date_text})
+    monkeypatch.setattr(
+        source._impl.position_rank_provider,
+        "_fetch_previous_available_positions",
+        lambda current, current_warnings, max_lookback_days=7: {"lookback": max_lookback_days},
+    )
+    monkeypatch.setattr(source._impl.position_rank_provider, "_fetch_citic_net_short_changes", lambda date_text, current_warnings: {"IF": 1})
+    monkeypatch.setattr(source._impl.position_trend_provider, "fetch", lambda current, current_warnings: ({"IF": "trend"}, source._impl.last_fetch_observation))
+
+    assert source.__getattr__("_fetch_positions_if_due") == source._impl.position_rank_provider.fetch
+    assert source.__getattr__("_fetch_positions_for_date") == source._impl.position_rank_provider._fetch_positions_for_date
+    assert source.__getattr__("_fetch_citic_net_short_changes") == source._impl.position_rank_provider._fetch_citic_net_short_changes
+    assert source.__getattr__("_fetch_position_trends_if_due") == source._impl.position_trend_provider.fetch
+
+    assert source._fetch_positions_for_date("20260529", now, warnings) == {"date": "20260529"}
+    assert source._fetch_previous_available_positions(now, warnings, max_lookback_days=3) == {"lookback": 3}
+    assert source._fetch_citic_net_short_changes("20260529", warnings) == {"IF": 1}
+    assert source._fetch_position_trends_if_due(now, warnings) == {"IF": "trend"}
+
+    assert source._call_quiet(lambda: "quiet") == "quiet"
+    assert isinstance(build_result := build_akshare_data_source(_settings(tmp_path)), AkShareDataSource)
+    assert build_result._infer_product({"name": "上证50"}) == "IH"
