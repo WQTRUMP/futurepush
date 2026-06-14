@@ -13,6 +13,7 @@ from .formatting import format_analysis
 from .health import HealthState, start_healthcheck_server
 from .market_calendar import TradingCalendar
 from .models import MarketAnalysis, MarketSnapshot, PRODUCTS
+from .repositories import AnalysisWriteRepository, MarketReadRepository, PredictionRepository
 from .scoring import analyze_market
 from .storage import Storage
 from .validation import QuoteValidator
@@ -35,7 +36,9 @@ class SamplingContext:
 
 def run_once(
     settings: Settings,
-    storage: Storage,
+    market_reads: MarketReadRepository,
+    analysis_writes: AnalysisWriteRepository,
+    predictions: PredictionRepository,
     source: MarketDataSource,
     messenger: WeComClient | None = None,
     ai_client: AICommentaryClient | None = None,
@@ -50,16 +53,16 @@ def run_once(
     )
     context = build_sampling_context(
         settings,
-        storage,
+        market_reads,
         source,
         calendar,
         save_outside_market,
     )
     analysis = execute_analysis(settings, context)
-    persist_analysis_side_effects(storage, analysis, context.should_persist)
+    persist_analysis_side_effects(analysis_writes, predictions, analysis, context.should_persist)
     should_push = dispatch_alert_if_needed(
         settings,
-        storage,
+        analysis_writes,
         analysis,
         context.should_persist,
         push=push,
@@ -71,7 +74,7 @@ def run_once(
 
 def build_sampling_context(
     settings: Settings,
-    storage: Storage,
+    market_reads: MarketReadRepository,
     source: MarketDataSource,
     calendar: TradingCalendar,
     save_outside_market: bool,
@@ -79,19 +82,19 @@ def build_sampling_context(
     fetched_snapshot = source.fetch()
     snapshot, should_persist = _prepare_snapshot(settings, fetched_snapshot, calendar, save_outside_market)
     references = {
-        product: storage.get_reference_snapshot(product, snapshot.timestamp)
+        product: market_reads.get_reference_snapshot(product, snapshot.timestamp)
         for product in PRODUCTS
     }
     daily_references = {
-        product: storage.get_daily_reference_snapshot(product, snapshot.timestamp)
+        product: market_reads.get_daily_reference_snapshot(product, snapshot.timestamp)
         for product in PRODUCTS
     }
     basis_histories = {
-        product: storage.get_basis_history(product, snapshot.timestamp, settings.basis_history_days)
+        product: market_reads.get_basis_history(product, snapshot.timestamp, settings.basis_history_days)
         for product in PRODUCTS
     }
-    latest_contracts = storage.latest_contracts()
-    previous_score, previous_band = storage.latest_score()
+    latest_contracts = market_reads.latest_contracts()
+    previous_score, previous_band = market_reads.latest_score()
     return SamplingContext(
         snapshot=snapshot,
         should_persist=should_persist,
@@ -118,15 +121,21 @@ def execute_analysis(settings: Settings, context: SamplingContext) -> MarketAnal
     )
 
 
-def persist_analysis_side_effects(storage: Storage, analysis: MarketAnalysis, should_persist: bool) -> None:
+def persist_analysis_side_effects(
+    analysis_writes: AnalysisWriteRepository,
+    predictions: PredictionRepository,
+    analysis: MarketAnalysis,
+    should_persist: bool,
+) -> None:
     if not should_persist:
         return
-    storage.save_analysis(analysis)
+    analysis_writes.save_analysis(analysis)
+    predictions.enqueue_predictions(analysis)
 
 
 def dispatch_alert_if_needed(
     settings: Settings,
-    storage: Storage,
+    analysis_writes: AnalysisWriteRepository,
     analysis: MarketAnalysis,
     should_persist: bool,
     *,
@@ -135,7 +144,7 @@ def dispatch_alert_if_needed(
     ai_client: AICommentaryClient | None,
 ) -> bool:
     kind = _alert_kind(settings, analysis)
-    should_push = should_persist and push and kind is not None and not storage.has_recent_alert(
+    should_push = should_persist and push and kind is not None and not analysis_writes.has_recent_alert(
         kind,
         analysis.timestamp,
         _alert_cooldown_seconds(settings, kind),
@@ -152,7 +161,7 @@ def dispatch_alert_if_needed(
     if messenger is None:
         messenger = WeComClient(settings.wecom_webhook_url)
     messenger.send_message(message)
-    storage.save_alert(
+    analysis_writes.save_alert(
         analysis.timestamp,
         kind,
         analysis.band,
@@ -185,7 +194,9 @@ def run_forever(settings: Settings) -> None:
             try:
                 analysis, pushed = run_once(
                     settings,
-                    storage,
+                    storage.market_reads,
+                    storage.analysis_writes,
+                    storage.predictions,
                     source,
                     messenger,
                     ai_client,
@@ -248,11 +259,11 @@ def _prepare_snapshot(
     return validator.validate(snapshot), True
 
 
-def _should_push(settings: Settings, storage: Storage, analysis: MarketAnalysis) -> bool:
+def _should_push(settings: Settings, analysis_writes: AnalysisWriteRepository, analysis: MarketAnalysis) -> bool:
     kind = _alert_kind(settings, analysis)
     if kind is None:
         return False
-    return not storage.has_recent_alert(kind, analysis.timestamp, _alert_cooldown_seconds(settings, kind))
+    return not analysis_writes.has_recent_alert(kind, analysis.timestamp, _alert_cooldown_seconds(settings, kind))
 
 
 def _is_last_daily_window(settings: Settings, now: datetime, kind: str | None) -> bool:

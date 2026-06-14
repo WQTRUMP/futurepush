@@ -82,7 +82,15 @@ def test_run_once_persists_without_real_wecom(tmp_path: Path):
     source = FakeSource(datetime(2026, 5, 27, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
     messenger = WeComClient("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test", dry_run=True)
 
-    analysis, pushed = run_once(settings, storage, source, messenger, push=True)
+    analysis, pushed = run_once(
+        settings,
+        storage.market_reads,
+        storage.analysis_writes,
+        storage.predictions,
+        source,
+        messenger,
+        push=True,
+    )
 
     assert pushed is True
     assert analysis.score >= 40
@@ -96,8 +104,24 @@ def test_daily_policy_pushes_once_in_scheduled_window(tmp_path: Path):
     source = FakeSource(datetime(2026, 5, 27, 9, 36, tzinfo=ZoneInfo("Asia/Shanghai")))
     messenger = WeComClient("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test", dry_run=True)
 
-    _, first_pushed = run_once(settings, storage, source, messenger, push=True)
-    _, second_pushed = run_once(settings, storage, source, messenger, push=True)
+    _, first_pushed = run_once(
+        settings,
+        storage.market_reads,
+        storage.analysis_writes,
+        storage.predictions,
+        source,
+        messenger,
+        push=True,
+    )
+    _, second_pushed = run_once(
+        settings,
+        storage.market_reads,
+        storage.analysis_writes,
+        storage.predictions,
+        source,
+        messenger,
+        push=True,
+    )
 
     assert first_pushed is True
     assert second_pushed is False
@@ -110,7 +134,15 @@ def test_daily_policy_suppresses_regular_event_outside_windows(tmp_path: Path):
     source = FakeSource(datetime(2026, 5, 27, 11, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
     messenger = WeComClient("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test", dry_run=True)
 
-    _, pushed = run_once(settings, storage, source, messenger, push=True)
+    _, pushed = run_once(
+        settings,
+        storage.market_reads,
+        storage.analysis_writes,
+        storage.predictions,
+        source,
+        messenger,
+        push=True,
+    )
 
     assert pushed is False
 
@@ -246,6 +278,7 @@ def test_persist_analysis_side_effects_skips_when_not_persisting(tmp_path: Path)
 
     service.persist_analysis_side_effects(
         FakeStorage(),
+        type("FakePredictions", (), {"enqueue_predictions": lambda self, analysis: calls.append("enqueue_predictions")})(),
         _analysis(datetime(2026, 5, 27, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))),
         False,
     )
@@ -256,14 +289,21 @@ def test_persist_analysis_side_effects_skips_when_not_persisting(tmp_path: Path)
 def test_persist_analysis_side_effects_only_saves_online_analysis(tmp_path: Path):
     calls = []
 
-    class FakeStorage:
+    class FakeAnalysisWrites:
         def save_analysis(self, analysis):
             calls.append(("save_analysis", analysis.timestamp))
 
-    analysis = _analysis(datetime(2026, 5, 27, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
-    service.persist_analysis_side_effects(FakeStorage(), analysis, True)
+    class FakePredictions:
+        def enqueue_predictions(self, analysis):
+            calls.append(("enqueue_predictions", analysis.timestamp))
 
-    assert calls == [("save_analysis", analysis.timestamp)]
+    analysis = _analysis(datetime(2026, 5, 27, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
+    service.persist_analysis_side_effects(FakeAnalysisWrites(), FakePredictions(), analysis, True)
+
+    assert calls == [
+        ("save_analysis", analysis.timestamp),
+        ("enqueue_predictions", analysis.timestamp),
+    ]
 
 
 def test_dispatch_alert_if_needed_builds_default_messenger(tmp_path: Path, monkeypatch):
@@ -395,6 +435,9 @@ def test_run_forever_handles_open_market_success_and_error(tmp_path: Path, monke
     class FakeStorage:
         def __init__(self, db_path, calendar):
             created["calendar"] = calendar
+            self.market_reads = object()
+            self.analysis_writes = object()
+            self.predictions = object()
 
         def init(self):
             created["inited"] = True

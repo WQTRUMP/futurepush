@@ -82,6 +82,15 @@ python -m futures_signal evaluate
 python -m futures_signal evaluate --until 2026-06-02T10:30:00+08:00 --limit 200
 ```
 
+当前 SQLite 仓储边界按职责拆为四类：
+
+- `MarketReadRepository`：在线读取参考快照、日线参考、基差历史、最新合约和上一分数
+- `AnalysisWriteRepository`：在线写入快照、分数、告警
+- `PredictionRepository`：登记与扫描未打标预测
+- `PredictionLabelRepository`：回查未来现货并写入 `prediction_labels`
+
+`Storage` 继续保留为兼容 facade，旧调用面仍可用，但新逻辑只在内部转发到上述仓储。
+
 交易日历会缓存到 `data/trade_dates.json`。若 AkShare 日历接口临时失败，服务会优先使用缓存；没有缓存时才退回工作日判断。
 
 ## CLI

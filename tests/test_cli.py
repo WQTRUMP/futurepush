@@ -138,13 +138,16 @@ def test_main_evaluate_runs_prediction_job(tmp_path, monkeypatch, capsys):
         def __init__(self, db_path, calendar):
             created["db_path"] = db_path
             created["calendar"] = calendar
+            self.predictions = object()
+            self.prediction_labels = object()
 
         def init(self):
             created["inited"] = True
 
     class FakeJob:
-        def __init__(self, storage):
-            created["job_storage"] = storage
+        def __init__(self, predictions, prediction_labels):
+            created["predictions"] = predictions
+            created["prediction_labels"] = prediction_labels
 
         def run(self, until, limit):
             created["until"] = until
@@ -175,6 +178,8 @@ def test_main_evaluate_runs_prediction_job(tmp_path, monkeypatch, capsys):
     assert created["db_path"] == settings.db_path
     assert isinstance(created["calendar"], FakeCalendar)
     assert created["inited"] is True
+    assert created["predictions"] is not None
+    assert created["prediction_labels"] is not None
     assert created["until"] == datetime.fromisoformat("2026-06-02T10:30:00+08:00")
     assert created["limit"] == 25
     assert "scanned: 7" in output

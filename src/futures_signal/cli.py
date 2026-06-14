@@ -112,7 +112,9 @@ def main(argv: list[str] | None = None) -> None:
         ai_client = AICommentaryClient(settings) if args.push else None
         analysis, pushed = run_once(
             settings,
-            storage,
+            storage.market_reads,
+            storage.analysis_writes,
+            storage.predictions,
             source,
             messenger,
             ai_client,
@@ -125,7 +127,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.command == "evaluate":
         until = _parse_until_argument(args.until, settings)
-        result = PredictionEvaluationJob(storage).run(until=until, limit=args.limit)
+        result = PredictionEvaluationJob(storage.predictions, storage.prediction_labels).run(
+            until=until,
+            limit=args.limit,
+        )
         print(f"evaluated_at: {result.evaluated_at.isoformat(timespec='seconds')}")
         print(f"scanned: {result.scanned}")
         print(f"labeled: {result.labeled}")

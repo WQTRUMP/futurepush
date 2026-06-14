@@ -44,7 +44,9 @@ def test_evaluation_job_uses_next_trading_day_calendar(tmp_path: Path):
             ("2026-06-02T09:30:00+08:00", "IF", "IF2606", 4010, 0.1, 4040, 0.2, 0, 0, 1, 1, 1, "{}"),
         )
 
-    result = PredictionEvaluationJob(storage).run(datetime(2026, 6, 2, 10, 0, tzinfo=TZ))
+    result = PredictionEvaluationJob(storage.predictions, storage.prediction_labels).run(
+        datetime(2026, 6, 2, 10, 0, tzinfo=TZ)
+    )
 
     assert result.labeled == 1
     assert result.scanned == 1
@@ -79,7 +81,9 @@ def test_evaluation_job_skips_invalid_signals_and_missing_prices(tmp_path: Path)
             ("2026-06-02T09:21:00+08:00", "same_day_1030", 50, "中性", '{"signals": {"IF": {}}}'),
         )
 
-    result = PredictionEvaluationJob(storage).run(datetime(2026, 6, 2, 10, 30, tzinfo=TZ))
+    result = PredictionEvaluationJob(storage.predictions, storage.prediction_labels).run(
+        datetime(2026, 6, 2, 10, 30, tzinfo=TZ)
+    )
 
     assert result.scanned == 2
     assert result.labeled == 0
@@ -117,7 +121,7 @@ def test_evaluation_job_respects_limit_and_due_cutoff(tmp_path: Path):
             ("2026-06-02T10:30:00+08:00", "IF", "IF2606", 4015, 0.1, 4040, 0.2, 0, 0, 1, 1, 1, "{}"),
         )
 
-    result = PredictionEvaluationJob(storage).run(
+    result = PredictionEvaluationJob(storage.predictions, storage.prediction_labels).run(
         datetime(2026, 6, 2, 10, 30, tzinfo=TZ),
         limit=1,
     )
