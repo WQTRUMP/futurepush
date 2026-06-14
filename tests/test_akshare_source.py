@@ -230,6 +230,51 @@ def test_parse_tick_time_returns_none_for_invalid_value(tmp_path):
     assert source._parse_tick_time(now, {"ticktime": "bad"}) is None
 
 
+def test_parse_spot_tick_time_returns_none_for_invalid_value(tmp_path):
+    source = AkShareDataSource(_settings(tmp_path))
+    now = datetime(2026, 5, 28, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    assert source._parse_spot_tick_time(now, {"时间": "bad"}) is None
+
+
+def test_fetch_positions_fallback_uses_adjusted_trading_day(tmp_path, monkeypatch):
+    source = AkShareDataSource(_settings(tmp_path))
+    source.calendar = source.calendar.__class__(
+        ZoneInfo("Asia/Shanghai"),
+        use_akshare=True,
+        fetcher=lambda: ["2026-06-05", "2026-06-06", "2026-06-08"],
+    )
+    calls = []
+
+    def fake_rank_sum(date, vars_list):
+        calls.append(date)
+        if date == "20260606":
+            return pd.DataFrame(
+                [
+                    {
+                        "symbol": "IM2606",
+                        "variety": "IM",
+                        "long_open_interest_top20": 10000,
+                        "long_open_interest_chg_top20": 200,
+                        "short_open_interest_top20": 13000,
+                        "short_open_interest_chg_top20": 1700,
+                    }
+                ]
+            )
+        return pd.DataFrame([])
+
+    monkeypatch.setattr(source.ak, "get_rank_sum", fake_rank_sum)
+    monkeypatch.setattr(source.ak, "get_cffex_rank_table", lambda date, vars_list: {})
+
+    warnings: list[str] = []
+    positions = source._fetch_positions_if_due(datetime(2026, 6, 8, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")), warnings)
+
+    assert positions["IM"].as_of_date == "20260606"
+    assert "20260607" not in calls
+    assert "20260606" in calls
+    assert any("已使用 20260606 排名" in item for item in warnings)
+
+
 def test_fetch_position_trends_aggregates_recent_days(tmp_path, monkeypatch):
     source = AkShareDataSource(_settings(tmp_path))
 

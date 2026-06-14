@@ -148,8 +148,10 @@ class TradingCalendar:
         if self.cache_path is None:
             return
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self.cache_path.parent.chmod(0o700)
         payload = {"trade_dates": [item.isoformat() for item in sorted(dates)]}
         self.cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.cache_path.chmod(0o600)
 
 
 def _parse_date(value: date | datetime | str | object) -> date | None:

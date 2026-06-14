@@ -1,3 +1,4 @@
+import os
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -23,3 +24,18 @@ def test_trading_calendar_uses_fetched_dates(tmp_path):
     assert calendar.is_trading_day(date(2026, 5, 27))
     assert not calendar.is_trading_day(date(2026, 5, 28))
     assert calendar.source == "akshare"
+
+
+def test_trading_calendar_writes_cache_with_restricted_permissions(tmp_path):
+    cache_path = tmp_path / "nested" / "trade_dates.json"
+    calendar = TradingCalendar(
+        TZ,
+        use_akshare=True,
+        cache_path=cache_path,
+        fetcher=lambda: [date(2026, 5, 27), date(2026, 5, 28)],
+    )
+
+    assert calendar.is_trading_day(date(2026, 5, 27))
+
+    assert oct(os.stat(cache_path.parent).st_mode & 0o777) == "0o700"
+    assert oct(os.stat(cache_path).st_mode & 0o777) == "0o600"
