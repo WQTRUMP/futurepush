@@ -1,8 +1,10 @@
 from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import pytest
 
 from futures_signal.akshare_source import AkShareDataSource
 from futures_signal.config import Settings
@@ -314,3 +316,72 @@ def test_fetch_position_trends_aggregates_recent_days(tmp_path, monkeypatch):
     assert trends["IM"].latest_net_short_change == 700
     assert trends["IF"].net_short_change_sum == -800
     assert warnings == []
+
+
+def test_fetch_clears_realtime_cache_even_when_fetch_fails(tmp_path, monkeypatch):
+    source = AkShareDataSource(_settings(tmp_path))
+
+    def boom(now, warnings):
+        source._realtime_cache["temp"] = [{"symbol": "IF2606"}]
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(source, "_fetch_main_futures", boom)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        source.fetch()
+
+    assert source._realtime_cache == {}
+
+
+def test_fetch_terms_reuses_recent_cache_and_filters_invalid_contracts(tmp_path, monkeypatch):
+    source = AkShareDataSource(_settings(tmp_path))
+    now = datetime(2026, 5, 28, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    calls = {"IF": 0}
+
+    def fake_realtime_rows(symbol):
+        if symbol == PRODUCT_CONFIGS["IF"].future_name:
+            calls["IF"] += 1
+            return [
+                {"symbol": "IF0", "trade": 100, "position": 1, "volume": 2, "ticktime": "10:00:00"},
+                {"symbol": "IF2607", "trade": 4020, "position": 2000, "volume": 1000, "ticktime": "10:00:00"},
+                {"symbol": "IF2608", "trade": 0, "position": 3000, "volume": 1200, "ticktime": "10:01:00"},
+            ]
+        return []
+
+    monkeypatch.setattr(source, "_realtime_rows", fake_realtime_rows)
+
+    spots = {"IF": type("Spot", (), {"price": 4000})()}
+    terms = source._fetch_terms_if_due(now, spots, [])
+    cached = source._fetch_terms_if_due(now + timedelta(seconds=60), spots, [])
+
+    assert calls["IF"] == 1
+    assert cached is terms
+    assert [term.contract for term in terms["IF"]] == ["IF2607"]
+    assert terms["IF"][0].basis == 20
+
+
+def test_parse_datetime_value_handles_aware_isoformat(tmp_path):
+    source = AkShareDataSource(_settings(tmp_path))
+
+    parsed = source._parse_datetime_value("2026-05-28T10:00:00+00:00", "2026-05-28")
+
+    assert parsed is not None
+    assert parsed.tzinfo == ZoneInfo("Asia/Shanghai")
+    assert parsed.hour == 18
+
+
+def test_realtime_rows_uses_symbol_cache(tmp_path, monkeypatch):
+    source = AkShareDataSource(_settings(tmp_path))
+    calls = {"count": 0}
+
+    def fake_realtime(symbol):
+        calls["count"] += 1
+        return pd.DataFrame([{"symbol": "IF2606", "trade": 100}])
+
+    monkeypatch.setattr(source.ak, "futures_zh_realtime", fake_realtime)
+
+    first = source._realtime_rows("沪深300指数期货")
+    second = source._realtime_rows("沪深300指数期货")
+
+    assert first == second
+    assert calls["count"] == 1

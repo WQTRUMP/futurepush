@@ -2,7 +2,7 @@ import logging
 import os
 from pathlib import Path
 
-from futures_signal.cli import _SensitiveDataFilter, configure_logging
+from futures_signal.cli import _SensitiveDataFilter, configure_logging, main
 from futures_signal.config import Settings
 
 
@@ -69,3 +69,58 @@ def test_configure_logging_creates_restricted_log_file(tmp_path, monkeypatch):
         root.setLevel(original_level)
         for handler in original_handlers:
             root.addHandler(handler)
+
+
+def test_sensitive_data_filter_redacts_record_args():
+    record = logging.LogRecord(
+        name="test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="webhook=%s",
+        args=("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=secret&token=abc",),
+        exc_info=None,
+    )
+
+    allowed = _SensitiveDataFilter().filter(record)
+
+    assert allowed is True
+    assert record.args == ("https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=***&token=***",)
+
+
+def test_sensitive_data_filter_keeps_plain_text_and_queryless_urls():
+    redaction_filter = _SensitiveDataFilter()
+
+    assert redaction_filter._redact("no url here") == "no url here"
+    assert redaction_filter._redact("https://example.com/path") == "https://example.com/path"
+
+
+def test_main_init_db_uses_calendar_aware_storage(tmp_path, monkeypatch, capsys):
+    settings = _settings(tmp_path)
+    created = {}
+
+    class FakeCalendar:
+        pass
+
+    class FakeStorage:
+        def __init__(self, db_path, calendar):
+            created["db_path"] = db_path
+            created["calendar"] = calendar
+            created["inited"] = False
+
+        def init(self):
+            created["inited"] = True
+
+    monkeypatch.setattr("futures_signal.cli.Settings.from_env", classmethod(lambda cls: settings))
+    monkeypatch.setattr("futures_signal.cli.configure_logging", lambda _settings: None)
+    monkeypatch.setattr("futures_signal.cli.setup_runtime_dirs", lambda _settings: None)
+    monkeypatch.setattr("futures_signal.cli.TradingCalendar", lambda *args, **kwargs: FakeCalendar())
+    monkeypatch.setattr("futures_signal.cli.Storage", FakeStorage)
+
+    main(["init-db"])
+
+    output = capsys.readouterr().out
+    assert created["db_path"] == settings.db_path
+    assert isinstance(created["calendar"], FakeCalendar)
+    assert created["inited"] is True
+    assert str(settings.db_path) in output
