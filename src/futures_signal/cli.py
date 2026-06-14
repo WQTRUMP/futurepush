@@ -162,6 +162,7 @@ class _SensitiveDataFilter(logging.Filter):
             [
                 (key, "***" if key.lower() in self.SENSITIVE_QUERY_KEYS else item)
                 for key, item in parse_qsl(parts.query, keep_blank_values=True)
-            ]
+            ],
+            safe="*",
         )
         return urlunsplit((parts.scheme, parts.netloc, parts.path, redacted_query, parts.fragment))
