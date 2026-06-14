@@ -10,6 +10,7 @@ from .akshare_source import AkShareDataSource
 from .config import Settings
 from .data_sources import MarketDataSource
 from .formatting import format_analysis
+from .health import HealthState, start_healthcheck_server
 from .market_calendar import TradingCalendar
 from .models import MarketAnalysis, MarketSnapshot
 from .scoring import analyze_market
@@ -94,6 +95,8 @@ def run_once(
 
 def run_forever(settings: Settings) -> None:
     setup_runtime_dirs(settings)
+    health_state = HealthState(settings=settings, started_at=datetime.now(settings.tz))
+    start_healthcheck_server(settings, health_state)
     calendar = TradingCalendar(
         settings.tz,
         use_akshare=settings.use_trade_calendar,
@@ -104,6 +107,7 @@ def run_forever(settings: Settings) -> None:
     source = AkShareDataSource(settings)
     messenger = WeComClient(settings.wecom_webhook_url)
     ai_client = AICommentaryClient(settings)
+    health_state.mark_ready()
 
     logger.info("futures-signal started")
     while True:
@@ -119,12 +123,15 @@ def run_forever(settings: Settings) -> None:
                     push=True,
                     calendar=calendar,
                 )
+                health_state.mark_sample_ok(analysis.timestamp)
                 logger.info("sample score=%s band=%s pushed=%s", analysis.score, analysis.band, pushed)
             except Exception:
+                health_state.mark_error(now)
                 logger.exception("sampling failed")
             time.sleep(settings.sample_interval_seconds)
             continue
 
+        health_state.mark_idle()
         wait_seconds = min(calendar.seconds_until_next_session(now), 3600)
         if calendar.warning:
             logger.warning(calendar.warning)

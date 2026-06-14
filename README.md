@@ -14,6 +14,7 @@ pip install -e ".[dev]"
 python -m futures_signal test-wecom
 python -m futures_signal once
 python -m futures_signal run
+curl http://127.0.0.1:18080/healthz
 ```
 
 ## Docker 部署
@@ -24,6 +25,24 @@ cp .env.example .env
 chmod 600 .env
 docker compose up -d --build
 docker compose logs -f
+curl http://127.0.0.1:18080/healthz
+```
+
+健康检查默认说明：
+
+- 裸机/虚拟环境运行 `python -m futures_signal run` 时，会同时启动只读健康检查 HTTP 入口：`http://127.0.0.1:18080/healthz`
+- 兼容路径：`/health` 与 `/healthz`
+- 响应固定返回 `200 OK` 和基础状态字段：`status`、`service`、`time`、`uptime_seconds`、`worker`、`storage`
+- 不返回 `WECOM_WEBHOOK_URL`、`DEEPSEEK_API_KEY`、评分权重、策略细节等敏感信息
+- Docker Compose 默认把容器内健康端口绑定到宿主机 `127.0.0.1:18080`，仅供本机巡检，不对公网暴露
+
+可选环境变量：
+
+```env
+HEALTHCHECK_ENABLED=true
+HEALTHCHECK_HOST=127.0.0.1
+HEALTHCHECK_PORT=18080
+HEALTHCHECK_PATH=/healthz
 ```
 
 企业微信机器人 Webhook 形如：
@@ -56,6 +75,34 @@ python -m futures_signal once --save-outside-market
 python -m futures_signal once --push
 python -m futures_signal test-wecom
 python -m futures_signal calendar
+```
+
+查看健康状态：
+
+```bash
+curl http://127.0.0.1:18080/healthz
+curl http://127.0.0.1:18080/health
+```
+
+示例响应：
+
+```json
+{
+  "status": "ok",
+  "service": "futures-signal",
+  "time": "2026-06-14T12:00:00+08:00",
+  "uptime_seconds": 42,
+  "worker": {
+    "status": "ok",
+    "last_sample_at": "2026-06-14T11:59:00+08:00",
+    "last_error_at": null
+  },
+  "storage": {
+    "db_path": "data/market.db",
+    "db_exists": true,
+    "db_readable": true
+  }
+}
 ```
 
 ## 评分

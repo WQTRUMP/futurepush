@@ -223,3 +223,51 @@ def test_load_dotenv_ignores_missing_dependency(monkeypatch):
     monkeypatch.setenv("LOAD_DOTENV", "true")
 
     config._load_dotenv()
+
+
+def test_settings_from_env_exposes_local_healthcheck_defaults(tmp_path, monkeypatch):
+    monkeypatch.setenv("WECOM_WEBHOOK_URL", "")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "")
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "market.db"))
+
+    settings = Settings.from_env()
+
+    assert settings.healthcheck_enabled is True
+    assert settings.healthcheck_host == "127.0.0.1"
+    assert settings.healthcheck_port == 18080
+    assert settings.healthcheck_path == "/healthz"
+
+
+def test_settings_rejects_invalid_healthcheck_path(tmp_path):
+    with pytest.raises(ValueError, match="HEALTHCHECK_PATH"):
+        Settings(
+            wecom_webhook_url="",
+            timezone_name="Asia/Shanghai",
+            sample_interval_seconds=60,
+            alert_cooldown_seconds=300,
+            push_every_sample=False,
+            run_outside_market_hours=True,
+            use_trade_calendar=False,
+            trade_calendar_cache_path=tmp_path / "trade_dates.json",
+            fetch_term_structure=False,
+            fetch_term_structure_every_seconds=300,
+            fetch_position_rank=True,
+            position_trend_days=5,
+            dividend_season_adjust=True,
+            basis_history_days=20,
+            roll_window_days=7,
+            ai_commentary_enabled=False,
+            deepseek_api_key="",
+            deepseek_base_url="https://api.deepseek.com",
+            deepseek_model="deepseek-v4-pro",
+            deepseek_timeout_seconds=20,
+            deepseek_max_tokens=420,
+            deepseek_temperature=0.2,
+            deepseek_thinking_enabled=False,
+            deepseek_reasoning_effort="high",
+            log_level="INFO",
+            data_dir=tmp_path,
+            db_path=tmp_path / "market.db",
+            healthcheck_path="healthz",
+        )

@@ -1,6 +1,6 @@
 # 阿里云 ECS 部署
 
-本项目推荐用 Docker Compose 部署。服务没有对外 HTTP 端口，安全组只需要开放 SSH 端口即可；出站需要能访问 AkShare 数据源、DeepSeek API，以及企业微信机器人 Webhook。
+本项目推荐用 Docker Compose 部署。业务服务不需要对公网开放 HTTP 端口，安全组只需要开放 SSH 端口即可；出站需要能访问 AkShare 数据源、DeepSeek API，以及企业微信机器人 Webhook。健康检查端口默认只绑定宿主机回环地址 `127.0.0.1:18080`，用于本机巡检，不对公网暴露。
 
 ## 1. 服务器准备
 
@@ -81,6 +81,7 @@ HTTP_PROXY=http://proxy-host:proxy-port
 ```bash
 docker compose up -d --build
 docker compose logs -f
+curl http://127.0.0.1:18080/healthz
 ```
 
 验证企业微信推送：
@@ -101,6 +102,14 @@ docker compose run --rm futures-signal python -m futures_signal test-ai
 docker compose run --rm futures-signal python -m futures_signal calendar
 ```
 
+查看容器健康检查响应：
+
+```bash
+curl http://127.0.0.1:18080/healthz
+```
+
+返回 `200 OK`，包含基础字段 `status`、`service`、`time`、`uptime_seconds`、`worker`、`storage`。该接口只做只读状态检查，不返回机器人密钥、AI 密钥或策略明细。
+
 ## 5. 运维命令
 
 查看状态：
@@ -108,6 +117,8 @@ docker compose run --rm futures-signal python -m futures_signal calendar
 ```bash
 docker compose ps
 ```
+
+期望看到 `healthy` 状态；Compose 已内置基于 `http://127.0.0.1:18080/healthz` 的容器健康探测。
 
 查看日志：
 

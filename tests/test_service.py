@@ -167,6 +167,7 @@ def test_generate_ai_commentary_hides_internal_error_message(tmp_path: Path):
 def test_run_forever_uses_calendar_for_storage_and_sleep(tmp_path: Path, monkeypatch):
     settings = replace(_settings(tmp_path, push_every_sample=False), run_outside_market_hours=False)
     created = {}
+    health = {}
     fake_now = datetime(2026, 5, 30, 16, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
     class FakeCalendar:
@@ -202,6 +203,18 @@ def test_run_forever_uses_calendar_for_storage_and_sleep(tmp_path: Path, monkeyp
     monkeypatch.setattr(service, "AkShareDataSource", lambda _settings: object())
     monkeypatch.setattr(service, "WeComClient", lambda webhook_url: {"webhook_url": webhook_url})
     monkeypatch.setattr(service, "AICommentaryClient", lambda _settings: object())
+    monkeypatch.setattr(
+        service,
+        "start_healthcheck_server",
+        lambda _settings, state: health.update(
+            {
+                "host": _settings.healthcheck_host,
+                "port": _settings.healthcheck_port,
+                "path": _settings.healthcheck_path,
+                "status": state.worker_status,
+            }
+        ),
+    )
     monkeypatch.setattr(service, "datetime", FakeDateTime)
 
     def stop_sleep(seconds):
@@ -215,6 +228,7 @@ def test_run_forever_uses_calendar_for_storage_and_sleep(tmp_path: Path, monkeyp
     assert created["db_path"] == settings.db_path
     assert isinstance(created["calendar"], FakeCalendar)
     assert created["inited"] is True
+    assert health == {"host": "127.0.0.1", "port": 18080, "path": "/healthz", "status": "starting"}
 
 
 def _settings(tmp_path: Path, push_every_sample: bool) -> Settings:

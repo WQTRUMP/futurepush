@@ -78,6 +78,10 @@ class Settings:
     max_tick_sync_seconds: int = 60
     position_rank_empty_retry_seconds: int = 900
     allow_custom_ai_base_url: bool = False
+    healthcheck_enabled: bool = True
+    healthcheck_host: str = "127.0.0.1"
+    healthcheck_port: int = 18080
+    healthcheck_path: str = "/healthz"
 
     @property
     def tz(self) -> ZoneInfo:
@@ -86,6 +90,7 @@ class Settings:
     def __post_init__(self) -> None:
         _validate_wecom_webhook_url(self.wecom_webhook_url)
         _validate_ai_base_url(self.deepseek_base_url, self.allow_custom_ai_base_url)
+        _validate_healthcheck(self.healthcheck_host, self.healthcheck_port, self.healthcheck_path)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -128,6 +133,10 @@ class Settings:
             data_dir=data_dir,
             db_path=Path(os.getenv("DB_PATH", str(data_dir / "market.db"))),
             allow_custom_ai_base_url=_bool_env("ALLOW_CUSTOM_AI_BASE_URL", False),
+            healthcheck_enabled=_bool_env("HEALTHCHECK_ENABLED", True),
+            healthcheck_host=os.getenv("HEALTHCHECK_HOST", "127.0.0.1").strip() or "127.0.0.1",
+            healthcheck_port=_int_env("HEALTHCHECK_PORT", 18080),
+            healthcheck_path=os.getenv("HEALTHCHECK_PATH", "/healthz").strip() or "/healthz",
         )
 
 
@@ -149,3 +158,12 @@ def _validate_ai_base_url(value: str, allow_custom: bool) -> None:
         raise ValueError("DEEPSEEK_BASE_URL 必须使用 https")
     if not allow_custom and parsed.hostname != "api.deepseek.com":
         raise ValueError("DEEPSEEK_BASE_URL 仅允许 api.deepseek.com；如需自定义请开启 ALLOW_CUSTOM_AI_BASE_URL")
+
+
+def _validate_healthcheck(host: str, port: int, path: str) -> None:
+    if not host.strip():
+        raise ValueError("HEALTHCHECK_HOST 不能为空")
+    if not 1 <= port <= 65535:
+        raise ValueError("HEALTHCHECK_PORT 必须在 1-65535 之间")
+    if not path.startswith("/"):
+        raise ValueError("HEALTHCHECK_PATH 必须以 / 开头")
