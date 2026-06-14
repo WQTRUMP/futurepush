@@ -46,17 +46,12 @@ class AkShareDataSource:
             cache_path=settings.trade_calendar_cache_path,
         )
         self._realtime_cache: dict[str, list[dict[str, Any]]] = {}
-        self._active_realtime_rows: dict[str, list[dict[str, Any]]] | None = None
-        self._active_realtime_errors: dict[str, Exception] = {}
 
     def fetch(self) -> MarketSnapshot:
         now = datetime.now(self.settings.tz)
         warnings: list[str] = []
         self._realtime_cache = {}
-        self._active_realtime_rows = {}
-        self._active_realtime_errors = {}
         try:
-            self._prefetch_realtime_rows()
             futures = self._fetch_main_futures(now, warnings)
             spots = self._fetch_spots(now, warnings)
             terms = self._fetch_terms_if_due(now, spots, warnings)
@@ -64,8 +59,6 @@ class AkShareDataSource:
             position_trends = self._fetch_position_trends_if_due(now, warnings)
         finally:
             self._realtime_cache = {}
-            self._active_realtime_rows = None
-            self._active_realtime_errors = {}
 
         if not futures:
             raise DataSourceError("AkShare 未返回 IF/IH/IC/IM 期货主力行情")
@@ -131,7 +124,7 @@ class AkShareDataSource:
         result: dict[str, FutureQuote] = {}
         for product, config in PRODUCT_CONFIGS.items():
             try:
-                rows = self._current_realtime_rows(config.future_name)
+                rows = self._realtime_rows(config.future_name)
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"{product} 逐品种期货实时源获取失败: {self._brief_error(exc)}")
                 continue
@@ -292,7 +285,7 @@ class AkShareDataSource:
         terms: dict[str, list[TermQuote]] = {}
         for product, config in PRODUCT_CONFIGS.items():
             try:
-                rows = self._current_realtime_rows(config.future_name)
+                rows = self._realtime_rows(config.future_name)
             except Exception as exc:  # noqa: BLE001
                 warnings.append(f"{product} 期限结构获取失败: {self._brief_error(exc)}")
                 continue
@@ -635,21 +628,3 @@ class AkShareDataSource:
             df = self._call_quiet(self.ak.futures_zh_realtime, symbol=symbol)
             self._realtime_cache[symbol] = self._rows(df)
         return self._realtime_cache[symbol]
-
-    def _prefetch_realtime_rows(self) -> None:
-        if self._active_realtime_rows is None:
-            return
-        for config in PRODUCT_CONFIGS.values():
-            symbol = config.future_name
-            try:
-                self._active_realtime_rows[symbol] = self._realtime_rows(symbol)
-            except Exception as exc:  # noqa: BLE001
-                self._active_realtime_errors[symbol] = exc
-
-    def _current_realtime_rows(self, symbol: str) -> list[dict[str, Any]]:
-        if self._active_realtime_rows is not None:
-            if symbol in self._active_realtime_rows:
-                return self._active_realtime_rows[symbol]
-            if symbol in self._active_realtime_errors:
-                raise self._active_realtime_errors[symbol]
-        return self._realtime_rows(symbol)

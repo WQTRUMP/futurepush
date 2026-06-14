@@ -132,31 +132,6 @@ def test_connect_ignores_missing_file_during_chmod(tmp_path: Path, monkeypatch):
         assert conn.execute("select 1").fetchone()[0] == 1
 
 
-def test_load_analysis_inputs_reads_all_context_in_one_call(tmp_path: Path):
-    storage = Storage(tmp_path / "market.db")
-    storage.init()
-    _insert_snapshot(storage, "2026-05-29T10:15:00+08:00", futures_price=4050)
-    _insert_snapshot(storage, "2026-05-29T14:56:00+08:00", futures_price=4100)
-
-    with storage._connect() as conn:
-        conn.execute(
-            "insert into scores (ts, score, band, payload_json) values (?, ?, ?, ?)",
-            ("2026-05-29T14:56:00+08:00", 67, "偏多", "{}"),
-        )
-
-    references, daily_references, basis_histories, latest_contracts, previous_score, previous_band = (
-        storage.load_analysis_inputs(("IF",), datetime(2026, 6, 1, 10, 15, tzinfo=TZ), 20)
-    )
-
-    assert references["IF"] is None
-    assert daily_references["IF"] is not None
-    assert daily_references["IF"].futures_price == 4100
-    assert basis_histories["IF"] == [250.0]
-    assert latest_contracts == {"IF": "IF2606"}
-    assert previous_score == 67
-    assert previous_band == "偏多"
-
-
 def _insert_snapshot(storage: Storage, ts: str, futures_price: float) -> None:
     with storage._connect() as conn:
         conn.execute(

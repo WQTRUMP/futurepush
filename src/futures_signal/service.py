@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class SamplingContext:
-    fetched_snapshot: MarketSnapshot
     snapshot: MarketSnapshot
     should_persist: bool
     references: dict[str, object | None]
@@ -79,16 +78,21 @@ def build_sampling_context(
 ) -> SamplingContext:
     fetched_snapshot = source.fetch()
     snapshot, should_persist = _prepare_snapshot(settings, fetched_snapshot, calendar, save_outside_market)
-    (
-        references,
-        daily_references,
-        basis_histories,
-        latest_contracts,
-        previous_score,
-        previous_band,
-    ) = storage.load_analysis_inputs(PRODUCTS, snapshot.timestamp, settings.basis_history_days)
+    references = {
+        product: storage.get_reference_snapshot(product, snapshot.timestamp)
+        for product in PRODUCTS
+    }
+    daily_references = {
+        product: storage.get_daily_reference_snapshot(product, snapshot.timestamp)
+        for product in PRODUCTS
+    }
+    basis_histories = {
+        product: storage.get_basis_history(product, snapshot.timestamp, settings.basis_history_days)
+        for product in PRODUCTS
+    }
+    latest_contracts = storage.latest_contracts()
+    previous_score, previous_band = storage.latest_score()
     return SamplingContext(
-        fetched_snapshot=fetched_snapshot,
         snapshot=snapshot,
         should_persist=should_persist,
         references=references,

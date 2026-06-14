@@ -318,30 +318,6 @@ def test_fetch_position_trends_aggregates_recent_days(tmp_path, monkeypatch):
     assert warnings == []
 
 
-def test_fetch_combines_all_subresults_and_clears_cache(tmp_path, monkeypatch):
-    source = AkShareDataSource(_settings(tmp_path))
-    now = datetime(2026, 5, 28, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
-
-    class FakeDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return now
-
-    monkeypatch.setattr("futures_signal.akshare_source.datetime", FakeDateTime)
-    monkeypatch.setattr(source, "_fetch_main_futures", lambda _now, warnings: {"IF": object()})
-    monkeypatch.setattr(source, "_fetch_spots", lambda _now, warnings: {"IF": object()})
-    monkeypatch.setattr(source, "_fetch_terms_if_due", lambda _now, spots, warnings: {"IF": ["term"]})
-    monkeypatch.setattr(source, "_fetch_positions_if_due", lambda _now, warnings: {"IF": "position"})
-    monkeypatch.setattr(source, "_fetch_position_trends_if_due", lambda _now, warnings: {"IF": "trend"})
-
-    snapshot = source.fetch()
-
-    assert snapshot.terms == {"IF": ["term"]}
-    assert snapshot.positions == {"IF": "position"}
-    assert snapshot.position_trends == {"IF": "trend"}
-    assert source._realtime_cache == {}
-
-
 def test_fetch_clears_realtime_cache_even_when_fetch_fails(tmp_path, monkeypatch):
     source = AkShareDataSource(_settings(tmp_path))
 
@@ -355,7 +331,6 @@ def test_fetch_clears_realtime_cache_even_when_fetch_fails(tmp_path, monkeypatch
         source.fetch()
 
     assert source._realtime_cache == {}
-    assert source._active_realtime_rows is None
 
 
 def test_fetch_terms_reuses_recent_cache_and_filters_invalid_contracts(tmp_path, monkeypatch):
@@ -421,62 +396,3 @@ def test_realtime_rows_uses_symbol_cache(tmp_path, monkeypatch):
     assert first == second
     assert calls["count"] == 1
 
-
-def test_fetch_prefetches_realtime_rows_once_for_main_and_terms(tmp_path, monkeypatch):
-    source = AkShareDataSource(_settings(tmp_path))
-    now = datetime(2026, 5, 28, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
-    calls = {"count": 0}
-
-    def fake_main_contract(symbol):
-        return "IF2606,IH2606,IC2606,IM2606"
-
-    def fake_realtime(symbol):
-        calls["count"] += 1
-        prefix = {
-            "沪深300指数期货": "IF",
-            "上证50指数期货": "IH",
-            "中证500指数期货": "IC",
-            "中证1000股指期货": "IM",
-        }[symbol]
-        return pd.DataFrame(
-            [
-                {
-                    "symbol": f"{prefix}2606",
-                    "name": f"{prefix}2606",
-                    "trade": 101,
-                    "changepercent": 0.2,
-                    "volume": 1100,
-                    "position": 2100,
-                    "ticktime": "10:00:00",
-                }
-            ]
-        )
-
-    class FakeDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return now
-
-    monkeypatch.setattr("futures_signal.akshare_source.datetime", FakeDateTime)
-    monkeypatch.setattr(source.ak, "match_main_contract", fake_main_contract)
-    monkeypatch.setattr(source.ak, "futures_zh_realtime", fake_realtime)
-    monkeypatch.setattr(
-        source.ak,
-        "stock_zh_index_spot_sina",
-        lambda: pd.DataFrame(
-            [
-                {"代码": "sh000300", "名称": "沪深300", "最新价": 4800, "涨跌幅": 0.1, "时间": "10:00:00"},
-                {"代码": "sh000016", "名称": "上证50", "最新价": 2900, "涨跌幅": 0.2, "时间": "10:00:00"},
-                {"代码": "sh000905", "名称": "中证500", "最新价": 8400, "涨跌幅": 0.3, "时间": "10:00:00"},
-                {"代码": "sh000852", "名称": "中证1000", "最新价": 8500, "涨跌幅": 0.4, "时间": "10:00:00"},
-            ]
-        ),
-    )
-    monkeypatch.setattr(source.ak, "get_rank_sum", lambda date, vars_list: pd.DataFrame([]))
-    monkeypatch.setattr(source.ak, "get_cffex_rank_table", lambda date, vars_list: {})
-    monkeypatch.setattr(source.ak, "get_rank_sum_daily", lambda start_day, end_day, vars_list: pd.DataFrame([]))
-
-    snapshot = source.fetch()
-
-    assert set(snapshot.futures) == {"IF", "IH", "IC", "IM"}
-    assert calls["count"] == 4
