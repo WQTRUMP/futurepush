@@ -13,8 +13,18 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 python -m futures_signal test-wecom
 python -m futures_signal once
-python -m futures_signal run
-curl http://127.0.0.1:18080/healthz
+```
+
+运行态健康检查请在服务进程存活期间验证；不要把 `python -m futures_signal run` 和 `curl` 写成同一条串行前台命令。可用两个终端，或按下面方式后台启动后再探测：
+
+```bash
+source .venv/bin/activate
+python -m futures_signal run > /tmp/futures-signal.log 2>&1 &
+FS_PID=$!
+trap 'kill $FS_PID' EXIT
+sleep 3
+curl -sS http://127.0.0.1:18080/healthz
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18080/health
 ```
 
 ## Docker 部署

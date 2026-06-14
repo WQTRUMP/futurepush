@@ -84,6 +84,17 @@ docker compose logs -f
 curl http://127.0.0.1:18080/healthz
 ```
 
+如果按裸机方式直接运行 `python -m futures_signal run`，请在服务进程存活期间另开终端探测，或使用后台方式：
+
+```bash
+python -m futures_signal run > /tmp/futures-signal.log 2>&1 &
+FS_PID=$!
+trap 'kill $FS_PID' EXIT
+sleep 3
+curl -sS http://127.0.0.1:18080/healthz
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18080/health
+```
+
 验证企业微信推送：
 
 ```bash
